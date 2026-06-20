@@ -2,17 +2,20 @@
   "expo": {
     "name": "Growin Staff",
     "slug": "growin-staff-app",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
+    "jsEngine": "jsc",
     "newArchEnabled": false,
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.growin.staff"
+      "bundleIdentifier": "com.growin.staff",
+      "jsEngine": "jsc"
     },
     "android": {
-      "package": "com.growin.staff"
+      "package": "com.growin.staff",
+      "jsEngine": "jsc"
     },
     "extra": {
       "managerUrl": "https://crm.travbizz.com/growin_manager/growin_resolve_agent.php"
