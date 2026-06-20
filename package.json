@@ -1,6 +1,6 @@
 {
   "name": "growin-staff-app",
-  "version": "1.0.3",
+  "version": "1.0.5",
   "private": true,
   "main": "App.js",
   "scripts": {
@@ -17,7 +17,10 @@
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
-    "babel-preset-expo": "~54.0.0"
+    "babel-preset-expo": "~54.0.0",
+    "@babel/plugin-transform-class-properties": "^7.25.9",
+    "@babel/plugin-transform-private-methods": "^7.25.9",
+    "@babel/plugin-transform-private-property-in-object": "^7.25.9"
   },
   "engines": {
     "node": ">=20.19.0"
