@@ -4,18 +4,10 @@
     "slug": "growin-staff-app",
     "version": "1.0.6",
     "orientation": "portrait",
-    "icon": "./assets/growin-logo.png",
     "userInterfaceStyle": "light",
     "jsEngine": "jsc",
     "newArchEnabled": false,
-    "assetBundlePatterns": [
-      "**/*"
-    ],
-    "splash": {
-      "image": "./assets/growin-logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#F6FFF9"
-    },
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.growin.staff",
@@ -23,11 +15,7 @@
     },
     "android": {
       "package": "com.growin.staff",
-      "jsEngine": "jsc",
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/growin-logo.png",
-        "backgroundColor": "#F6FFF9"
-      }
+      "jsEngine": "jsc"
     },
     "extra": {
       "managerUrl": "https://crm.travbizz.com/growin_manager/growin_resolve_agent.php"
