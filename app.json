@@ -2,31 +2,20 @@
   "expo": {
     "name": "Growin Staff",
     "slug": "growin-staff-app",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
-    "icon": "./assets/growin-logo.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/growin-logo.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#F6FFF9"
-    },
+    "newArchEnabled": false,
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.growin.staff"
     },
     "android": {
-      "package": "com.growin.staff",
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/growin-logo.png",
-        "backgroundColor": "#F6FFF9"
-      },
-      "edgeToEdgeEnabled": true
+      "package": "com.growin.staff"
     },
     "extra": {
-      "managerResolverUrl": "https://crm.travbizz.com/growin_manager/growin_resolve_agent.php"
-    },
-    "description": "Growin Staff CRM app - Expo SDK 54 compatible for iOS Expo Go."
+      "managerUrl": "https://crm.travbizz.com/growin_manager/growin_resolve_agent.php"
+    }
   }
 }
