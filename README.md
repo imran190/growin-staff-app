@@ -1,3 +1,3 @@
-# Growin Staff App SDK54 v6
+# Growin Staff App - Expo SDK54 v7 Fix
 
-Fixes Expo config square icon/adaptive icon validation and keeps SDK54 compatibility.
+Fixes Expo entry registration by setting package.json main to node_modules/expo/AppEntry.js.

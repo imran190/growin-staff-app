@@ -2,7 +2,7 @@
   "expo": {
     "name": "Growin Staff",
     "slug": "growin-staff-app",
-    "version": "1.0.6",
+    "version": "1.0.8",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "jsEngine": "jsc",
