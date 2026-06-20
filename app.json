@@ -2,7 +2,7 @@
   "expo": {
     "name": "Growin Staff",
     "slug": "growin-staff-app",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/growin-logo.png",
     "userInterfaceStyle": "light",
@@ -26,6 +26,7 @@
     },
     "extra": {
       "managerResolverUrl": "https://crm.travbizz.com/growin_manager/growin_resolve_agent.php"
-    }
+    },
+    "description": "Growin Staff CRM app - Expo SDK 54 compatible for iOS Expo Go."
   }
 }

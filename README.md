@@ -1,12 +1,12 @@
-# Growin Staff App - Expo React Native v1
+# Growin Staff App - Expo React Native v2 (SDK 54)
 
-This is the first native Expo project for Growin Staff CRM app.
+This build is compatible with iOS Expo Go SDK 54.
 
-## Run for iPhone / Android Expo Go
+## Run
 
 ```bash
 npm install
-npx expo start
+npx expo start --tunnel
 ```
 
 Then scan QR code from iPhone/Android Expo Go.
@@ -16,16 +16,5 @@ Then scan QR code from iPhone/Android Expo Go.
 - Agent Code + Username + Password login UI
 - Agent manager resolver support
 - Clean non-crowded dashboard preview
-- iOS/Android adaptive styling base
-- Bottom app menu shell
-
-## Manager URL
-
-Default resolver:
-
-`https://crm.travbizz.com/growin_manager/growin_resolve_agent.php`
-
-## Login flow
-
-Agent Code -> Manager Resolver -> Client CRM `growin_app/growin_api.php?endpoint=auth.login`
-
+- Bottom tab shell
+- Placeholder screens for Query, WhatsApp, More

@@ -1,6 +1,6 @@
 {
   "name": "growin-staff-app",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "main": "App.js",
   "scripts": {
@@ -10,12 +10,12 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "expo": "~56.0.0",
-    "react": "19.2.3",
-    "react-native": "0.85.0"
+    "expo": "~54.0.0",
+    "react": "19.1.0",
+    "react-native": "0.81.0"
   },
   "devDependencies": {},
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=20.19.0"
   }
 }
