@@ -1,3 +1,3 @@
-# Growin Staff App - Expo SDK54 v7 Fix
+# Growin Staff Expo SDK54 v8
 
-Fixes Expo entry registration by setting package.json main to node_modules/expo/AppEntry.js.
+Fix: explicit index.js registers the app root using Expo registerRootComponent.
