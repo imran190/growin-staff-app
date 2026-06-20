@@ -1,3 +1,3 @@
-# Growin Staff Expo SDK54 v9
+# Growin Staff Expo SDK54 v10
 
-Fix: App.js directly registers the root component so Expo Go does not show "main has not been registered".
+Single-file App.js test build. No external src imports, no image icon references. This removes registration/import issues and confirms Expo Go can run the app.
