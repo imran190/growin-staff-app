@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -16,12 +15,11 @@ import {
 
 const MANAGER_URL = 'https://crm.travbizz.com/growin_manager/growin_resolve_agent.php';
 
-function normalizeCrmUrl(url) {
-  if (!url) return '';
-  return String(url).trim().replace(/\/+$/, '');
+function cleanCrmUrl(url) {
+  return String(url || '').trim().replace(/\/+$/, '');
 }
 
-async function readJsonResponse(response) {
+async function parseJson(response) {
   const text = await response.text();
   try {
     return JSON.parse(text);
@@ -33,13 +31,15 @@ async function readJsonResponse(response) {
 async function resolveAgent(agentCode) {
   const url = `${MANAGER_URL}?agent_code=${encodeURIComponent(agentCode)}`;
   const response = await fetch(url, { method: 'GET' });
-  const data = await readJsonResponse(response);
+  const data = await parseJson(response);
 
   if (!response.ok || data.status === false) {
     throw new Error(data.message || 'Agent code not found');
   }
 
-  const apiBaseUrl = data.api_base_url || `${normalizeCrmUrl(data.crm_url)}/growin_app/growin_api.php`;
+  const crmUrl = cleanCrmUrl(data.crm_url);
+  const apiBaseUrl = data.api_base_url || `${crmUrl}/growin_app/growin_api.php`;
+
   if (!apiBaseUrl) {
     throw new Error('CRM API URL not found for this agent code');
   }
@@ -47,21 +47,21 @@ async function resolveAgent(agentCode) {
   return {
     agentCode,
     companyName: data.company_name || 'Growin CRM',
-    crmUrl: data.crm_url || '',
+    crmUrl,
     apiBaseUrl,
     loginEndpoint: data.login_endpoint || `${apiBaseUrl}?endpoint=auth.login`,
   };
 }
 
-async function loginToCrm(agentInfo, username, password) {
-  const response = await fetch(agentInfo.loginEndpoint, {
+async function loginToCrm(agent, username, password) {
+  const response = await fetch(agent.loginEndpoint, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      agent_code: agentInfo.agentCode,
+      agent_code: agent.agentCode,
       username,
       email: username,
       password,
@@ -70,57 +70,43 @@ async function loginToCrm(agentInfo, username, password) {
     }),
   });
 
-  const data = await readJsonResponse(response);
+  const data = await parseJson(response);
+
   if (!response.ok || data.status === false) {
-    throw new Error(data.message || 'Login failed. Please check username/password.');
+    throw new Error(data.message || 'Login failed. Username/password check karo.');
   }
+
   return data;
 }
 
-function StatCard({ label, value, note }) {
-  return (
-    <View style={styles.statCard}>
-      <Text style={styles.statLabel}>{label}</Text>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statNote}>{note}</Text>
-    </View>
-  );
-}
-
 function DashboardScreen({ session, onLogout }) {
-  const displayName = session?.user?.name || session?.user_name || session?.username || 'Staff User';
+  const displayName =
+    session?.user?.name ||
+    session?.name ||
+    session?.user_name ||
+    session?.username ||
+    'Staff User';
+
   const companyName = session?.agent?.companyName || session?.company_name || 'Growin CRM';
 
   return (
     <SafeAreaView style={styles.safe}>
       <StatusBar barStyle="dark-content" />
       <ScrollView contentContainerStyle={styles.dashboardWrap}>
-        <View style={styles.topBar}>
+        <View style={styles.dashboardTop}>
           <View>
-            <Text style={styles.smallText}>Welcome</Text>
+            <Text style={styles.mutedText}>Welcome</Text>
             <Text style={styles.dashboardTitle}>{displayName}</Text>
           </View>
-          <Pressable style={styles.logoutBtn} onPress={onLogout}>
+          <Pressable style={styles.logoutButton} onPress={onLogout}>
             <Text style={styles.logoutText}>Logout</Text>
           </Pressable>
         </View>
 
-        <View style={styles.heroCard}>
+        <View style={styles.dashboardHero}>
           <Text style={styles.heroTitle}>Organization Dashboard</Text>
           <Text style={styles.heroText}>{companyName}</Text>
-          <Text style={styles.heroDate}>Today overview</Text>
-        </View>
-
-        <View style={styles.grid}>
-          <StatCard label="Total Queries" value="--" note="CRM API connect next" />
-          <StatCard label="Confirmed" value="--" note="Selected period" />
-          <StatCard label="Payments" value="--" note="Pending / received" />
-          <StatCard label="Follow-ups" value="--" note="Today tasks" />
-        </View>
-
-        <View style={styles.infoCard}>
-          <Text style={styles.infoTitle}>Next Module</Text>
-          <Text style={styles.infoText}>Query list, query detail and staff dashboard cards will be connected screen by screen.</Text>
+          <Text style={styles.heroSub}>Login successful. Dashboard API next step me connect karenge.</Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -133,42 +119,37 @@ export default function App() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [message, setMessage] = useState('');
   const [session, setSession] = useState(null);
 
-  const canSubmit = useMemo(() => {
-    return agentCode.trim().length >= 5 && username.trim().length > 0 && password.length > 0 && !loading;
-  }, [agentCode, username, password, loading]);
+  const isFormReady = useMemo(() => {
+    return agentCode.trim().length === 5 && username.trim().length > 0 && password.length > 0;
+  }, [agentCode, username, password]);
 
-  const handleLogin = async () => {
-    if (!canSubmit) {
-      setErrorMessage('Agent code, username aur password required hai.');
+  const handleSignIn = async () => {
+    if (loading) return;
+
+    setMessage('');
+
+    if (!isFormReady) {
+      setMessage('Agent Code 5 digit, Username aur Password required hai.');
       return;
     }
 
     setLoading(true);
-    setErrorMessage('');
+    setMessage('Agent code verify ho raha hai...');
 
     try {
-      const agentInfo = await resolveAgent(agentCode.trim());
-      const loginData = await loginToCrm(agentInfo, username.trim(), password);
-      setSession({ ...loginData, agent: agentInfo, username: username.trim() });
+      const agent = await resolveAgent(agentCode.trim());
+      setMessage('CRM login check ho raha hai...');
+      const loginData = await loginToCrm(agent, username.trim(), password);
+      setMessage('');
+      setSession({ ...loginData, agent, username: username.trim() });
     } catch (error) {
-      setErrorMessage(error.message || 'Unable to login');
+      setMessage(error?.message || 'Login nahi ho paya. CRM API check karo.');
     } finally {
       setLoading(false);
     }
-  };
-
-  const openDemo = () => {
-    setSession({
-      status: true,
-      username: 'Demo Staff',
-      agent: {
-        agentCode: agentCode || '10001',
-        companyName: 'Growin Demo CRM',
-      },
-    });
   };
 
   if (session) {
@@ -181,79 +162,74 @@ export default function App() {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.loginWrap}>
           <View style={styles.brandBlock}>
-            <View style={styles.brandMark}>
-              <Text style={styles.brandMarkText}>G</Text>
-            </View>
             <Text style={styles.brand}>Growin</Text>
             <Text style={styles.brandSub}>Travel CRM Staff App</Text>
           </View>
 
-          <View style={styles.cardMain}>
-            <Text style={styles.title}>Welcome Back</Text>
-            <Text style={styles.subtitle}>Sign in with your staff account</Text>
+          <Text style={styles.title}>Welcome Back</Text>
+          <Text style={styles.subtitle}>Sign in to continue</Text>
 
-            <View style={styles.fieldBlock}>
-              <Text style={styles.label}>Agent Code</Text>
-              <TextInput
-                value={agentCode}
-                onChangeText={(text) => setAgentCode(text.replace(/[^0-9]/g, '').slice(0, 5))}
-                style={styles.input}
-                placeholder="5 digit agent code"
-                placeholderTextColor="#8A96A8"
-                keyboardType="number-pad"
-                maxLength={5}
-                returnKeyType="next"
-              />
-            </View>
-
-            <View style={styles.fieldBlock}>
-              <Text style={styles.label}>Username / Email</Text>
-              <TextInput
-                value={username}
-                onChangeText={setUsername}
-                style={styles.input}
-                placeholder="Enter username or email"
-                placeholderTextColor="#8A96A8"
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="email-address"
-                returnKeyType="next"
-              />
-            </View>
-
-            <View style={styles.fieldBlock}>
-              <Text style={styles.label}>Password</Text>
-              <View style={styles.passwordRow}>
-                <TextInput
-                  value={password}
-                  onChangeText={setPassword}
-                  style={styles.passwordInput}
-                  placeholder="Enter password"
-                  placeholderTextColor="#8A96A8"
-                  secureTextEntry={!showPassword}
-                  returnKeyType="done"
-                  onSubmitEditing={handleLogin}
-                />
-                <Pressable onPress={() => setShowPassword(!showPassword)} style={styles.eyeBtn}>
-                  <Text style={styles.eyeText}>{showPassword ? 'Hide' : 'Show'}</Text>
-                </Pressable>
-              </View>
-            </View>
-
-            {errorMessage ? <Text style={styles.errorText}>{errorMessage}</Text> : null}
-
-            <Pressable
-              style={[styles.button, !canSubmit && styles.buttonDisabled]}
-              onPress={handleLogin}
-              disabled={!canSubmit}
-            >
-              {loading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.buttonText}>Sign In</Text>}
-            </Pressable>
-
-            <Pressable style={styles.demoBtn} onPress={openDemo}>
-              <Text style={styles.demoText}>Open Demo Dashboard</Text>
-            </Pressable>
+          <View style={styles.fieldBlock}>
+            <Text style={styles.label}>Agent Code</Text>
+            <TextInput
+              value={agentCode}
+              onChangeText={(text) => setAgentCode(text.replace(/[^0-9]/g, '').slice(0, 5))}
+              style={styles.input}
+              placeholder="5 digit agent code"
+              placeholderTextColor="#8A96A8"
+              keyboardType="number-pad"
+              maxLength={5}
+              editable={!loading}
+            />
           </View>
+
+          <View style={styles.fieldBlock}>
+            <Text style={styles.label}>Username / Email</Text>
+            <TextInput
+              value={username}
+              onChangeText={setUsername}
+              style={styles.input}
+              placeholder="Username / Email"
+              placeholderTextColor="#8A96A8"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!loading}
+            />
+          </View>
+
+          <View style={styles.fieldBlock}>
+            <Text style={styles.label}>Password</Text>
+            <View style={styles.passwordBox}>
+              <TextInput
+                value={password}
+                onChangeText={setPassword}
+                style={styles.passwordInput}
+                placeholder="Password"
+                placeholderTextColor="#8A96A8"
+                secureTextEntry={!showPassword}
+                editable={!loading}
+                onSubmitEditing={handleSignIn}
+              />
+              <Pressable
+                onPress={() => setShowPassword((value) => !value)}
+                style={styles.showButton}
+                hitSlop={12}
+              >
+                <Text style={styles.showText}>{showPassword ? 'Hide' : 'Show'}</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          {message ? (
+            <Text style={[styles.message, loading && styles.infoMessage]}>{message}</Text>
+          ) : null}
+
+          <Pressable
+            onPress={handleSignIn}
+            style={({ pressed }) => [styles.signButton, pressed && styles.signButtonPressed]}
+          >
+            {loading ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.signButtonText}>Sign In</Text>}
+          </Pressable>
 
           <Text style={styles.footerText}>Secured by Growin App Manager</Text>
         </ScrollView>
@@ -270,261 +246,192 @@ const styles = StyleSheet.create({
   },
   loginWrap: {
     flexGrow: 1,
-    padding: 22,
+    paddingHorizontal: 22,
+    paddingTop: 64,
+    paddingBottom: 32,
     justifyContent: 'center',
   },
   brandBlock: {
     alignItems: 'center',
-    marginBottom: 24,
-  },
-  brandMark: {
-    width: 72,
-    height: 72,
-    borderRadius: 24,
-    backgroundColor: '#E8FFF3',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: '#BFF3D7',
-  },
-  brandMarkText: {
-    fontSize: 34,
-    fontWeight: '900',
-    color: '#08A85A',
+    marginBottom: 28,
   },
   brand: {
-    fontSize: 42,
+    fontSize: 44,
     fontWeight: '900',
     color: '#053B46',
     letterSpacing: -1,
   },
   brandSub: {
-    fontSize: 16,
-    color: '#0BA866',
-    marginTop: 3,
+    marginTop: 5,
+    color: '#08A85A',
+    fontSize: 17,
     fontWeight: '700',
   },
-  cardMain: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 28,
-    padding: 22,
-    borderWidth: 1,
-    borderColor: '#DDE7EA',
-    shadowColor: '#053B46',
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 12 },
-    elevation: 3,
-  },
   title: {
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: '900',
-    color: '#102033',
+    color: '#12243A',
     textAlign: 'center',
   },
   subtitle: {
-    fontSize: 15,
-    color: '#6B7688',
-    textAlign: 'center',
     marginTop: 8,
-    marginBottom: 24,
+    marginBottom: 32,
+    fontSize: 16,
+    color: '#7A8797',
+    textAlign: 'center',
   },
   fieldBlock: {
-    marginBottom: 14,
+    marginBottom: 16,
   },
   label: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#26384E',
     marginBottom: 8,
     marginLeft: 4,
+    color: '#2F3B4D',
+    fontSize: 13,
+    fontWeight: '800',
   },
   input: {
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: '#FDFEFE',
+    height: 60,
+    borderRadius: 18,
+    paddingHorizontal: 20,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#DDE7EA',
-    paddingHorizontal: 18,
-    fontSize: 16,
-    color: '#102033',
+    borderColor: '#DCE7EA',
+    color: '#12243A',
+    fontSize: 17,
   },
-  passwordRow: {
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: '#FDFEFE',
+  passwordBox: {
+    height: 60,
+    borderRadius: 18,
+    paddingLeft: 20,
+    paddingRight: 6,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#DDE7EA',
+    borderColor: '#DCE7EA',
     flexDirection: 'row',
     alignItems: 'center',
   },
   passwordInput: {
     flex: 1,
     height: '100%',
-    paddingHorizontal: 18,
-    fontSize: 16,
-    color: '#102033',
+    color: '#12243A',
+    fontSize: 17,
+    paddingRight: 8,
   },
-  eyeBtn: {
-    paddingHorizontal: 14,
-    height: '100%',
+  showButton: {
+    height: 48,
+    minWidth: 70,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#E8FFF3',
   },
-  eyeText: {
+  showText: {
     color: '#08A85A',
-    fontWeight: '800',
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '900',
   },
-  errorText: {
+  message: {
     color: '#D92D20',
     backgroundColor: '#FFF2F0',
-    borderColor: '#FFD1CB',
     borderWidth: 1,
-    padding: 12,
+    borderColor: '#FFD1CB',
     borderRadius: 14,
-    marginBottom: 12,
+    padding: 12,
     fontSize: 13,
     fontWeight: '700',
+    marginTop: 2,
+    marginBottom: 14,
   },
-  button: {
-    height: 56,
-    borderRadius: 17,
+  infoMessage: {
+    color: '#075985',
+    backgroundColor: '#EAF6FF',
+    borderColor: '#BAE6FD',
+  },
+  signButton: {
+    height: 60,
+    borderRadius: 18,
     backgroundColor: '#08A85A',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 4,
+    marginTop: 8,
+    shadowColor: '#08A85A',
+    shadowOpacity: 0.18,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 3,
   },
-  buttonDisabled: {
-    backgroundColor: '#9BDDBD',
+  signButtonPressed: {
+    transform: [{ scale: 0.99 }],
+    opacity: 0.88,
   },
-  buttonText: {
+  signButtonText: {
     color: '#FFFFFF',
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: '900',
-  },
-  demoBtn: {
-    marginTop: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 44,
-  },
-  demoText: {
-    color: '#053B46',
-    fontWeight: '800',
   },
   footerText: {
-    textAlign: 'center',
+    marginTop: 22,
     color: '#7A8797',
     fontSize: 12,
-    marginTop: 18,
+    textAlign: 'center',
+    fontWeight: '600',
   },
   dashboardWrap: {
-    padding: 18,
-    paddingBottom: 40,
+    padding: 22,
+    paddingBottom: 42,
   },
-  topBar: {
+  dashboardTop: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    justifyContent: 'space-between',
+    marginBottom: 18,
   },
-  smallText: {
-    color: '#6B7688',
+  mutedText: {
+    color: '#7A8797',
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   dashboardTitle: {
-    color: '#102033',
-    fontSize: 26,
+    color: '#12243A',
+    fontSize: 28,
     fontWeight: '900',
-    marginTop: 2,
   },
-  logoutBtn: {
-    paddingHorizontal: 14,
-    height: 40,
+  logoutButton: {
+    height: 42,
+    paddingHorizontal: 16,
     borderRadius: 14,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#DDE7EA',
-    alignItems: 'center',
+    borderColor: '#DCE7EA',
     justifyContent: 'center',
   },
   logoutText: {
     color: '#053B46',
+    fontSize: 14,
     fontWeight: '900',
   },
-  heroCard: {
-    borderRadius: 24,
-    padding: 20,
+  dashboardHero: {
     backgroundColor: '#053B46',
-    marginBottom: 14,
+    borderRadius: 24,
+    padding: 22,
   },
   heroTitle: {
     color: '#FFFFFF',
-    fontSize: 22,
+    fontSize: 23,
     fontWeight: '900',
   },
   heroText: {
     color: '#BFF3D7',
-    fontSize: 15,
-    marginTop: 6,
-    fontWeight: '700',
-  },
-  heroDate: {
-    color: '#FFFFFF',
-    opacity: 0.8,
-    marginTop: 14,
-    fontSize: 13,
-  },
-  grid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-  },
-  statCard: {
-    width: '48%',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#DDE7EA',
-  },
-  statLabel: {
-    color: '#667085',
-    fontSize: 12,
+    fontSize: 16,
     fontWeight: '800',
-  },
-  statValue: {
-    color: '#102033',
-    fontSize: 28,
-    fontWeight: '900',
     marginTop: 8,
   },
-  statNote: {
-    color: '#08A85A',
-    fontSize: 12,
-    marginTop: 4,
-    fontWeight: '700',
-  },
-  infoCard: {
-    marginTop: 14,
-    padding: 18,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#DDE7EA',
-  },
-  infoTitle: {
-    color: '#102033',
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  infoText: {
-    color: '#6B7688',
+  heroSub: {
+    color: '#FFFFFF',
+    opacity: 0.82,
     fontSize: 14,
     lineHeight: 20,
-    marginTop: 8,
+    marginTop: 16,
   },
 });
