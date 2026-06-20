@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { registerRootComponent } from 'expo';
 import { Platform, StatusBar, StyleSheet, View } from 'react-native';
 import LoginScreen from './src/screens/LoginScreen';
 import DashboardScreen from './src/screens/DashboardScreen';
@@ -6,7 +7,7 @@ import PlaceholderScreen from './src/screens/PlaceholderScreen';
 import BottomTabs from './src/components/BottomTabs';
 import { growinTheme } from './src/styles/growinTheme';
 
-export default function App() {
+function App() {
   const [session, setSession] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
 
@@ -40,3 +41,7 @@ const styles = StyleSheet.create({
     paddingTop: Platform.OS === 'android' ? 0 : 0
   }
 });
+
+
+export default App;
+registerRootComponent(App);

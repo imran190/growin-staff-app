@@ -1,3 +1,3 @@
-# Growin Staff Expo SDK54 v8
+# Growin Staff Expo SDK54 v9
 
-Fix: explicit index.js registers the app root using Expo registerRootComponent.
+Fix: App.js directly registers the root component so Expo Go does not show "main has not been registered".
