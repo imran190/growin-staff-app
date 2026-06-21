@@ -1,8 +1,11 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
+  Dimensions,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
@@ -11,324 +14,148 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View,
+  View
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 
 const MANAGER_URL = 'https://crm.travbizz.com/growin_manager/growin_resolve_agent.php';
-const SESSION_KEY = 'growin_staff_session_v3';
+const SESSION_KEY = 'growin_staff_session_dashboard_live_v2';
+const BUILD_TAG = 'Growin Dashboard Live v2';
 
-function trimSlash(value) {
-  return String(value || '').replace(/\/+$/, '');
+function cleanSlash(v) { return String(v || '').replace(/\/+$/, ''); }
+function textValue(v) {
+  if (v === undefined || v === null) return '';
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (Array.isArray(v)) return v.map(textValue).filter(Boolean).join(', ');
+  if (typeof v === 'object') {
+    if (v.label) return textValue(v.label);
+    if (v.title) return textValue(v.title);
+    if (v.name) return textValue(v.name);
+    if (v.value !== undefined) return textValue(v.value);
+    if (v.range || v.from || v.to) {
+      const range = textValue(v.range);
+      const from = textValue(v.from_display || v.from);
+      const to = textValue(v.to_display || v.to);
+      if (from || to) return `${range ? range + ' • ' : ''}${from}${from && to ? ' - ' : ''}${to}`;
+      return range;
+    }
+    return '';
+  }
+  return String(v);
 }
-
-function normalizeApiBase(resolveData) {
-  const loginEndpoint = resolveData?.login_endpoint || '';
-  if (loginEndpoint) return String(loginEndpoint).split('?')[0];
-
-  const apiBase = resolveData?.api_base_url || resolveData?.api_url || resolveData?.growin_api_url || '';
-  if (apiBase) return String(apiBase).split('?')[0];
-
-  const crmUrl = resolveData?.crm_url || resolveData?.crm_base_url || '';
-  if (crmUrl) return `${trimSlash(crmUrl)}/growin_app/growin_api.php`;
-
-  return 'https://crm.travbizz.com/growin_app/growin_api.php';
+function first(...values) { for (const v of values) { const t = textValue(v); if (t !== '') return t; } return ''; }
+function arr(v) { if (Array.isArray(v)) return v; if (Array.isArray(v?.items)) return v.items; if (Array.isArray(v?.rows)) return v.rows; if (Array.isArray(v?.list)) return v.list; if (Array.isArray(v?.data)) return v.data; return []; }
+function money(v) {
+  const n = Number(v || 0);
+  const fixed = Math.round(n).toLocaleString('en-IN');
+  return `INR ${fixed}`;
 }
-
-function buildApiUrl(session, endpoint, params = {}) {
-  const token = session?.token || '';
-  const allParams = {
-    endpoint,
-    ...params,
-    token,
-    auth_token: token,
-    session_token: token,
-    access_token: token,
-    staff_token: token,
-    growin_token: token,
-  };
-
-  const query = Object.keys(allParams)
-    .filter((key) => allParams[key] !== undefined && allParams[key] !== null && allParams[key] !== '')
-    .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(String(allParams[key]))}`)
-    .join('&');
-
-  const separator = String(session.apiBaseUrl).includes('?') ? '&' : '?';
-  return `${session.apiBaseUrl}${separator}${query}`;
+function shortMoney(v) {
+  const n = Number(v || 0);
+  if (n >= 10000000) return 'INR ' + (n / 10000000).toFixed(1) + 'Cr';
+  if (n >= 100000) return 'INR ' + (n / 100000).toFixed(1) + 'L';
+  return money(n);
 }
-
-function apiHeaders(session) {
-  const token = session?.token || '';
-  return {
-    Accept: 'application/json',
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${token}`,
-    Token: token,
-    token,
-    'Auth-Token': token,
-    'X-Auth-Token': token,
-    'X-Growin-Token': token,
-    'X-Access-Token': token,
-  };
+function num(v) { return String(Math.round(Number(v || 0))).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function formatYMD(date) { const d = new Date(date); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+function parseYMD(value) {
+  if (!value) return new Date();
+  const p = String(value).split('-').map(Number);
+  if (p.length !== 3 || p.some((x) => !x)) return new Date(value);
+  return new Date(p[0], p[1] - 1, p[2]);
 }
-
-async function readJson(res) {
+function ddmmyyyy(value) { const d = parseYMD(value); return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`; }
+function buildApiBase(resolveData) {
+  const loginEndpoint = String(resolveData?.login_endpoint || '');
+  if (loginEndpoint.includes('growin_api.php')) return loginEndpoint.split('?')[0];
+  const apiBase = String(resolveData?.api_base_url || resolveData?.api_url || '');
+  if (apiBase.includes('growin_api.php')) return apiBase.split('?')[0];
+  if (apiBase) return `${cleanSlash(apiBase)}/growin_app/growin_api.php`;
+  const crmUrl = String(resolveData?.crm_url || 'https://crm.travbizz.com/');
+  return `${cleanSlash(crmUrl)}/growin_app/growin_api.php`;
+}
+function makeUrl(baseUrl, endpoint, params = {}, token = '') {
+  const all = { endpoint, ...params };
+  if (token) {
+    all.token = token; all.auth_token = token; all.session_token = token; all.access_token = token; all.staff_token = token; all.growin_token = token;
+  }
+  const query = Object.keys(all).filter((k) => all[k] !== undefined && all[k] !== null && all[k] !== '').map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(all[k]))}`).join('&');
+  return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}${query}`;
+}
+async function parseJson(res) {
   const text = await res.text();
   let json = {};
-  try {
-    json = text ? JSON.parse(text) : {};
-  } catch (e) {
-    throw new Error(text ? text.slice(0, 180) : 'Invalid JSON response');
-  }
-
-  if (!res.ok) {
-    throw new Error(json?.message || json?.error || `HTTP ${res.status}`);
-  }
-
+  try { json = text ? JSON.parse(text) : {}; } catch (e) { throw new Error(text ? text.slice(0, 180) : 'Invalid API response'); }
+  if (!res.ok) throw new Error(json?.message || json?.error || `HTTP ${res.status}`);
   return json;
 }
-
+function okStatus(json) { return !(json?.status === false || json?.success === false); }
+function apiHeaders(token) { return { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, Token: token, token, 'X-Auth-Token': token, 'X-Growin-Token': token, 'X-Access-Token': token }; }
 async function apiGet(session, endpoint, params = {}) {
-  const res = await fetch(buildApiUrl(session, endpoint, params), {
-    method: 'GET',
-    headers: apiHeaders(session),
-  });
-  const json = await readJson(res);
-  if (json?.status === false || json?.success === false) {
-    throw new Error(json?.message || json?.error || 'API request failed');
-  }
-  return json?.data || json?.payload || json?.result || json?.dashboard || json || {};
+  const res = await fetch(makeUrl(session.apiBaseUrl, endpoint, params, session.token), { method: 'GET', headers: apiHeaders(session.token) });
+  const json = await parseJson(res);
+  if (!okStatus(json)) throw new Error(json?.message || 'API failed');
+  return json?.data || json?.payload || json?.result || json;
 }
-
-function getToken(loginData) {
-  return (
-    loginData?.data?.token ||
-    loginData?.data?.access_token ||
-    loginData?.data?.session_token ||
-    loginData?.data?.auth_token ||
-    loginData?.data?.staff_token ||
-    loginData?.token ||
-    loginData?.access_token ||
-    loginData?.session_token ||
-    loginData?.auth_token ||
-    loginData?.staff_token ||
-    loginData?.api_token ||
-    ''
-  );
+function getToken(loginData) { return first(loginData?.data?.token, loginData?.data?.access_token, loginData?.data?.session_token, loginData?.data?.auth_token, loginData?.token, loginData?.access_token, loginData?.session_token, loginData?.auth_token); }
+function getUser(loginData) { return loginData?.data?.user || loginData?.user || loginData?.staff || {}; }
+function defaultDates() { const now = new Date(); return { from: formatYMD(new Date(now.getFullYear(), now.getMonth(), 1)), to: formatYMD(new Date(now.getFullYear(), now.getMonth() + 1, 0)) }; }
+function kpiFind(kpis, keys) { return kpis.find((x) => keys.some((k) => `${first(x.key)} ${first(x.title)} ${first(x.label)}`.toLowerCase().includes(k))) || null; }
+function kpiNumber(item) { return Number(item?.value ?? item?.count ?? item?.total ?? 0); }
+function statusText(v) { return first(v, 'On Going'); }
+function weatherIconName(row) {
+  const s = `${first(row.icon_key, row.condition, row.weather_label, row.status)}`.toLowerCase();
+  if (s.includes('rain') || s.includes('drizzle') || s.includes('shower')) return 'rainy';
+  if (s.includes('storm') || s.includes('thunder')) return 'thunderstorm';
+  if (s.includes('snow')) return 'snow';
+  if (s.includes('sun') || s.includes('clear')) return 'sunny';
+  if (s.includes('cloud') || s.includes('overcast')) return 'partly-sunny';
+  if (s.includes('mist') || s.includes('fog') || s.includes('haze')) return 'cloudy';
+  return 'partly-sunny';
 }
-
-function getUser(loginData) {
-  return loginData?.data?.user || loginData?.data?.staff || loginData?.user || loginData?.staff || {};
-}
-
-function money(value) {
-  const n = Number(value || 0);
-  const prefix = n < 0 ? '-â‚¹' : 'â‚¹';
-  const abs = Math.abs(n);
-  if (abs >= 10000000) return `${prefix}${(abs / 10000000).toFixed(1)}Cr`;
-  if (abs >= 100000) return `${prefix}${(abs / 100000).toFixed(1)}L`;
-  if (abs >= 1000) return `${prefix}${(abs / 1000).toFixed(1)}K`;
-  return `${prefix}${Math.round(abs)}`;
-}
-
-function shortNumber(value) {
-  const n = Number(value || 0);
-  if (Math.abs(n) >= 100000) return `${(n / 100000).toFixed(1)}L`;
-  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return String(Math.round(n));
-}
-
-function valueText(item) {
-  const key = String(item?.key || '').toLowerCase();
-  const format = String(item?.format || '').toLowerCase();
-  if (
-    format === 'money' ||
-    key.includes('sales') ||
-    key.includes('payment') ||
-    key.includes('amount') ||
-    key.includes('revenue') ||
-    key.includes('invoice')
-  ) {
-    return money(item?.value ?? item?.count ?? item?.total ?? 0);
-  }
-  return shortNumber(item?.value ?? item?.count ?? item?.total ?? 0);
-}
-
-function titleize(value) {
-  return String(value || '')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function getPath(obj, path) {
-  return String(path)
-    .split('.')
-    .reduce((acc, key) => {
-      if (acc && typeof acc === 'object' && key in acc) return acc[key];
-      return undefined;
-    }, obj);
-}
-
-function firstPath(obj, paths, fallback = undefined) {
-  for (const path of paths) {
-    const value = getPath(obj, path);
-    if (value !== undefined && value !== null && value !== '') return value;
-  }
-  return fallback;
-}
-
-function firstArray(obj, paths) {
-  for (const path of paths) {
-    const value = getPath(obj, path);
-    if (Array.isArray(value)) return value;
-    if (value && typeof value === 'object') {
-      if (Array.isArray(value.items)) return value.items;
-      if (Array.isArray(value.list)) return value.list;
-      if (Array.isArray(value.rows)) return value.rows;
-      if (Array.isArray(value.data)) return value.data;
-    }
-  }
-  return [];
-}
-
-function firstObject(obj, paths) {
-  for (const path of paths) {
-    const value = getPath(obj, path);
-    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
-  }
-  return {};
-}
-
-function getCountSource(dash) {
-  return firstObject(dash, ['counts', 'summary', 'totals', 'dashboard_counts', 'kpi_counts']);
-}
-
-function pickNumber(obj, keys) {
-  for (const key of keys) {
-    const val = obj?.[key];
-    if (val !== undefined && val !== null && val !== '') return Number(val || 0);
-  }
-  return 0;
-}
-
-function normalizeKpis(dash) {
-  const apiKpis = firstArray(dash, ['kpis', 'cards', 'summary.kpis', 'dashboard.kpis']);
-  if (apiKpis.length) {
-    return apiKpis.map((item, index) => ({
-      key: item.key || item.id || item.title || `kpi_${index}`,
-      title: item.title || item.label || item.name || titleize(item.key || `KPI ${index + 1}`),
-      sub: item.sub || item.subtitle || item.description || '',
-      value: item.value ?? item.count ?? item.total ?? 0,
-      format: item.format || item.type || '',
-    }));
-  }
-
-  const c = getCountSource(dash);
-  const kpis = [
-    { key: 'new_queries', title: 'New Queries', value: pickNumber(c, ['new_queries', 'new', 'today_queries']), sub: 'Current period' },
-    { key: 'total_queries', title: 'Total Queries', value: pickNumber(c, ['total_queries', 'queries', 'total']), sub: 'All queries' },
-    { key: 'confirmed', title: 'Confirmed', value: pickNumber(c, ['confirmed', 'won', 'converted']), sub: 'Won queries' },
-    { key: 'sales', title: 'Sales Value', value: pickNumber(c, ['sales', 'sales_value', 'revenue', 'invoice_amount']), sub: 'Confirmed value', format: 'money' },
-    { key: 'followups', title: 'Follow-ups', value: pickNumber(c, ['followups', 'follow_ups', 'today_followups']), sub: 'Pending today' },
-    { key: 'itineraries', title: 'Itineraries', value: pickNumber(c, ['itineraries', 'packages', 'quotations']), sub: 'Created' },
-    { key: 'companies', title: 'Companies', value: pickNumber(c, ['companies', 'company']), sub: 'Accounts' },
-    { key: 'pending_payments', title: 'Pending Payments', value: pickNumber(c, ['pending_payments', 'pending_amount', 'dues']), sub: 'Receivable', format: 'money' },
-    { key: 'active_users', title: 'Active Users', value: pickNumber(c, ['active_users', 'users', 'staff']), sub: 'Staff' },
-  ];
-
-  return kpis;
-}
-
-function normalizeModules(dash, kpis) {
-  const apiModules = firstArray(dash, ['modules', 'sections', 'all_sections']);
-  if (apiModules.length) {
-    return apiModules.map((m, index) => ({
-      key: m.key || m.id || m.slug || String(m.title || m.name || index).toLowerCase(),
-      title: m.title || m.name || m.label || titleize(m.key || `Module ${index + 1}`),
-      count: m.count ?? m.value ?? m.total ?? 0,
-      format: m.format || '',
-      icon: m.icon || '',
-    }));
-  }
-
-  const kpiByKey = {};
-  kpis.forEach((k) => {
-    kpiByKey[k.key] = k.value ?? 0;
-  });
-
-  return [
-    { key: 'queries', title: 'Queries', count: kpiByKey.total_queries || kpiByKey.new_queries || 0, icon: 'â˜°' },
-    { key: 'itinerary', title: 'Itinerary', count: kpiByKey.itineraries || 0, icon: 'â–¤' },
-    { key: 'payments', title: 'Payments', count: kpiByKey.pending_payments || 0, icon: 'â–£', format: 'money' },
-    { key: 'companies', title: 'Companies', count: kpiByKey.companies || 0, icon: 'â—«' },
-    { key: 'whatsapp', title: 'WhatsApp', count: 0, icon: 'âœ†' },
-    { key: 'email', title: 'Email', count: 0, icon: 'âœ‰' },
-    { key: 'users_staff', title: 'Users/Staff', count: kpiByKey.active_users || 0, icon: 'ðŸ‘¥' },
-    { key: 'organization', title: 'Organization', count: '', icon: 'ðŸ¢' },
-    { key: 'theme', title: 'Theme', count: '', icon: 'â—ˆ' },
-  ];
-}
-
-function normalizeTrend(dash) {
-  return firstArray(dash, ['monthly_trend', 'monthlyTrend', 'trend', 'graph.monthly', 'query_trend']).map((item, index) => ({
-    label: item.label || item.month || item.name || `M${index + 1}`,
-    total: Number(item.total ?? item.value ?? item.count ?? item.queries ?? 0),
-    won: Number(item.won ?? item.confirmed ?? item.converted ?? 0),
-  }));
-}
-
-function normalizeProgressList(dash, paths) {
-  return firstArray(dash, paths).map((item, index) => ({
-    label: item.label || item.title || item.name || item.stage || item.service || item.source || item.destination || `Item ${index + 1}`,
-    value: Number(item.value ?? item.count ?? item.total ?? item.amount ?? 0),
-    sub: item.sub || item.subtitle || item.description || '',
-  }));
-}
-
-function normalizeRecent(dash) {
-  return firstArray(dash, ['recent_queries', 'recentQueries', 'queries_recent', 'recent']).map((q, index) => ({
-    id: q.id || q.query_id || q.queryNo || q.query_no || index,
-    title: q.title || q.name || q.lead_pax_name || q.customer || q.client_name || `Query ${index + 1}`,
-    meta: q.destination || q.service || q.type || q.travel_date || '',
-    status: q.status || q.stage || q.stage_name || 'Open',
-    amount: q.amount || q.value || q.sales_value || '',
-  }));
-}
-
-function normalizeFollowups(dash) {
-  return firstArray(dash, ['today_followups', 'todays_followups', 'followups', 'follow_ups']).map((f, index) => ({
-    id: f.id || index,
-    title: f.title || f.name || f.customer || f.lead_pax_name || `Follow-up ${index + 1}`,
-    time: f.time || f.followup_time || f.follow_up_time || f.date || f.followup_date || '',
-    note: f.note || f.remark || f.description || f.status || '',
-  }));
-}
-
-function normalizePayments(dash) {
-  return firstArray(dash, ['pending_payments_list', 'pending_payment_list', 'payments_pending', 'pending_payments.rows', 'pending_payments.items']).map((p, index) => ({
-    id: p.id || index,
-    title: p.title || p.name || p.customer || p.client_name || p.company_name || `Payment ${index + 1}`,
-    amount: p.amount ?? p.pending ?? p.balance ?? p.total ?? 0,
-    due: p.due_date || p.date || p.payment_due_date || '',
-    status: p.status || 'Pending',
-  }));
-}
-
-function normalizeWeather(dash) {
-  const value = firstPath(dash, ['weather', 'destination_weather']);
-  if (Array.isArray(value)) return value;
-  if (value && typeof value === 'object') return [value];
-  return [];
-}
-
-function moduleToTab(title, key) {
-  const k = String(key || title || '').toLowerCase();
-  if (k.includes('quer')) return 'Queries';
-  if (k.includes('itinerary') || k.includes('package')) return 'Itinerary';
-  if (k.includes('payment')) return 'Payments';
-  return 'More';
+function normalizeDashboard(raw) {
+  const d = raw?.dashboard || raw?.data?.dashboard || raw?.data || raw || {};
+  const kpis = arr(d.kpis || d.summary || d.counts);
+  const periodObj = d.period || d.current_period || {};
+  const totalQueries = kpiFind(kpis, ['total quer']);
+  const confirmedQueries = kpiFind(kpis, ['confirmed quer', 'won quer']);
+  const confirmedValue = kpiFind(kpis, ['confirmed query value', 'confirmed value', 'sales value']);
+  const departures = kpiFind(kpis, ['confirmed departure', 'departure']);
+  const collection = kpiFind(kpis, ['collection', 'received']);
+  const supplierPayables = kpiFind(kpis, ['supplier payable', 'supplier payables']);
+  const followups = arr(d.today_followups || d.followups || d.todayFollowUps);
+  const supplierPayments = arr(d.pending_supplier_payments || d.supplier_payments || d.supplier_payables_list || d.pending_payments);
+  const notifications = arr(d.notifications || d.reminders || d.notification_list || d.alerts);
+  const users = arr(d.filters?.users || d.users);
+  return {
+    build: first(d.build, BUILD_TAG),
+    company: first(d.company, d.company_name, d.organization, d.organization_name, 'TravBizz CRM'),
+    periodObj,
+    periodText: first(periodObj),
+    filters: d.filters || {},
+    userOptions: users.length ? users : [{ id: 0, name: 'All Users' }],
+    cards: [
+      { key: 'total_queries', title: 'Total Queries', value: kpiNumber(totalQueries), sub: first(totalQueries?.sub, 'All active queries'), icon: 'chatbox-ellipses-outline', format: 'number' },
+      { key: 'confirmed_queries', title: 'Confirmed Queries', value: kpiNumber(confirmedQueries), sub: first(confirmedQueries?.sub, 'Selected period'), icon: 'checkbox-outline', format: 'number' },
+      { key: 'confirmed_query_value', title: 'Confirmed Query Value', value: kpiNumber(confirmedValue), sub: first(confirmedValue?.sub, 'Confirmed value'), icon: 'document-text-outline', format: 'money' },
+      { key: 'confirmed_departures', title: 'Confirmed Departures', value: kpiNumber(departures), sub: first(departures?.sub, 'Upcoming travel'), icon: 'airplane-outline', format: 'number' },
+      { key: 'collection_received', title: 'Collection Received', value: kpiNumber(collection), sub: first(collection?.sub, 'Paid billing'), icon: 'briefcase-outline', format: 'money' },
+      { key: 'supplier_payables', title: 'Supplier Payables', value: kpiNumber(supplierPayables), sub: first(supplierPayables?.sub, 'Due and unpaid'), icon: 'cash-outline', format: 'money' }
+    ],
+    followups,
+    pipeline: arr(d.query_pipeline || d.pipeline || d.stage_pipeline),
+    supplierPayments,
+    tours: arr(d.ongoing_upcoming_tours || d.ongoingUpcomingTours || d.upcoming_tours || d.confirmed_departures || d.departures || d.tours),
+    topDestinations: arr(d.top_destinations || d.destinations || d.topDestinations).slice(0, 5),
+    team: arr(d.team_performance || d.teamPerformance || d.team || d.staff || d.users),
+    weather: arr(d.destination_weather || d.weather || d.destinationWeather),
+    notifications,
+    notificationsCount: Number(d.notifications_unread ?? d.reminders_unread ?? notifications.length),
+    license: d.license || d.plan || d.subscription || {},
+    user: d.user || {}
+  };
 }
 
 export default function App() {
@@ -341,172 +168,52 @@ export default function App() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    loadSession();
-  }, []);
-
+  useEffect(() => { loadSession(); }, []);
   async function loadSession() {
-    try {
-      const saved = await SecureStore.getItemAsync(SESSION_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed?.token && parsed?.apiBaseUrl) setSession(parsed);
-      }
-    } catch (e) {
-      await SecureStore.deleteItemAsync(SESSION_KEY);
-    }
+    try { const saved = await SecureStore.getItemAsync(SESSION_KEY); if (saved) { const parsed = JSON.parse(saved); if (parsed?.token && parsed?.apiBaseUrl) setSession(parsed); } } catch (e) { await SecureStore.deleteItemAsync(SESSION_KEY); }
     setBooting(false);
   }
-
   async function handleSignIn() {
-    if (!agentCode.trim() || !username.trim() || !password) {
-      setMessage('Agent Code, Username aur Password required hai.');
-      return;
-    }
-
-    setLoginLoading(true);
-    setMessage('Agent code check ho raha hai...');
-
+    if (!agentCode.trim() || !username.trim() || !password) { setMessage('Agent Code, Username aur Password required hai.'); return; }
+    setLoginLoading(true); setMessage('Agent code check ho raha hai...');
     try {
-      const resolveRes = await fetch(`${MANAGER_URL}?agent_code=${encodeURIComponent(agentCode.trim())}`, {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-      });
-      const resolveData = await readJson(resolveRes);
-
-      if (resolveData?.status === false || resolveData?.success === false) {
-        throw new Error(resolveData?.message || 'Agent code invalid hai.');
-      }
-
-      const apiBaseUrl = normalizeApiBase(resolveData);
-      const loginUrl = resolveData?.login_endpoint || `${apiBaseUrl}?endpoint=auth.login`;
-
+      const resolveRes = await fetch(`${MANAGER_URL}?agent_code=${encodeURIComponent(agentCode.trim())}`, { headers: { Accept: 'application/json' } });
+      const resolveData = await parseJson(resolveRes);
+      if (!okStatus(resolveData)) throw new Error(resolveData?.message || 'Agent code invalid hai.');
+      const apiBaseUrl = buildApiBase(resolveData);
       setMessage('CRM login ho raha hai...');
-
-      const loginRes = await fetch(loginUrl, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: username.trim(),
-          email: username.trim(),
-          password,
-          agent_code: agentCode.trim(),
-          platform: Platform.OS,
-        }),
-      });
-
-      const loginData = await readJson(loginRes);
-
-      if (loginData?.status === false || loginData?.success === false) {
-        throw new Error(loginData?.message || loginData?.error || 'Login failed.');
-      }
-
+      const loginRes = await fetch(makeUrl(apiBaseUrl, 'auth.login'), { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ username: username.trim(), email: username.trim(), password, agent_code: agentCode.trim(), platform: Platform.OS }) });
+      const loginData = await parseJson(loginRes);
+      if (!okStatus(loginData)) throw new Error(loginData?.message || 'Login failed.');
       const token = getToken(loginData);
       if (!token) throw new Error('Login API se token/session nahi mila.');
-
       const user = getUser(loginData);
-      const newSession = {
-        token,
-        agentCode: agentCode.trim(),
-        username: user.display_name || user.name || user.full_name || user.email || username.trim(),
-        email: user.email || username.trim(),
-        user,
-        companyName: resolveData.company_name || user.company_name || 'Growin CRM',
-        apiBaseUrl,
-        loginAt: new Date().toISOString(),
-      };
-
-      await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(newSession));
-      setSession(newSession);
-      setPassword('');
-      setMessage('');
-    } catch (e) {
-      const msg = e?.message || 'Login request failed.';
-      setMessage(msg);
-      Alert.alert('Login Error', msg);
-    } finally {
-      setLoginLoading(false);
-    }
+      const next = { token, agentCode: agentCode.trim(), username: first(user.display_name, user.name, user.username, user.email, username.trim()), email: first(user.email, username.trim()), user, companyName: first(resolveData.company_name, resolveData.company, 'TravBizz CRM'), crmUrl: first(resolveData.crm_url, resolveData.api_base_url, 'https://crm.travbizz.com/'), apiBaseUrl, loginAt: new Date().toISOString() };
+      await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify(next)); setSession(next); setPassword(''); setMessage('');
+    } catch (e) { const msg = e?.message || 'Login request failed.'; setMessage(msg); Alert.alert('Login Error', msg); }
+    finally { setLoginLoading(false); }
   }
-
-  async function logout() {
-    try {
-      await SecureStore.deleteItemAsync(SESSION_KEY);
-    } catch (e) {}
-    setSession(null);
-  }
-
-  if (booting) {
-    return (
-      <SafeAreaView style={styles.safe}>
-        <View style={styles.center}>
-          <ActivityIndicator color="#12B76A" size="large" />
-          <Text style={styles.muted}>Growin loading...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
+  async function logout() { try { await SecureStore.deleteItemAsync(SESSION_KEY); } catch (e) {} setSession(null); }
+  if (booting) return <SafeAreaView style={styles.safe}><View style={styles.center}><ActivityIndicator color="#06C36B" size="large" /><Text style={styles.muted}>Growin loading...</Text></View></SafeAreaView>;
   if (session) return <MainApp session={session} onLogout={logout} />;
+  return <LoginScreen agentCode={agentCode} setAgentCode={setAgentCode} username={username} setUsername={setUsername} password={password} setPassword={setPassword} showPassword={showPassword} setShowPassword={setShowPassword} message={message} loginLoading={loginLoading} handleSignIn={handleSignIn} />;
+}
 
+function LoginScreen({ agentCode, setAgentCode, username, setUsername, password, setPassword, showPassword, setShowPassword, message, loginLoading, handleSignIn }) {
   return (
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.loginWrap} keyboardShouldPersistTaps="handled">
-          <View style={styles.loginLogoCircle}>
-            <Text style={styles.loginLogoText}>G</Text>
-          </View>
-          <Text style={styles.logo}>Growin Staff</Text>
-          <Text style={styles.logoSub}>Travel CRM Staff App</Text>
-
+          <View style={styles.logoCircle}><Text style={styles.logoLetter}>G</Text></View>
+          <Text style={styles.logo}>Growin Staff</Text><Text style={styles.logoSub}>Travel CRM Staff App</Text>
           <View style={styles.loginCard}>
-            <Text style={styles.loginTitle}>Welcome Back</Text>
-            <Text style={styles.loginSub}>Sign in to continue</Text>
-
-            <Text style={styles.label}>Agent Code</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter 5 digit agent code"
-              placeholderTextColor="#8A96A8"
-              value={agentCode}
-              onChangeText={setAgentCode}
-              keyboardType="number-pad"
-              maxLength={5}
-            />
-
-            <Text style={styles.label}>Username / Email</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="Enter username or email"
-              placeholderTextColor="#8A96A8"
-              value={username}
-              onChangeText={setUsername}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-
+            <Text style={styles.loginTitle}>Welcome Back</Text><Text style={styles.loginSub}>Sign in to continue</Text>
+            <Text style={styles.label}>Agent Code</Text><TextInput style={styles.input} placeholder="Enter 5 digit agent code" placeholderTextColor="#8A96A8" value={agentCode} onChangeText={setAgentCode} keyboardType="number-pad" maxLength={5} />
+            <Text style={styles.label}>Username / Email</Text><TextInput style={styles.input} placeholder="Enter username or email" placeholderTextColor="#8A96A8" value={username} onChangeText={setUsername} autoCapitalize="none" autoCorrect={false} />
             <Text style={styles.label}>Password</Text>
-            <View style={styles.passRow}>
-              <TextInput
-                style={styles.passInput}
-                placeholder="Enter password"
-                placeholderTextColor="#8A96A8"
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Pressable style={styles.showBtn} onPress={() => setShowPassword(!showPassword)}>
-                <Text style={styles.showText}>{showPassword ? 'Hide' : 'Show'}</Text>
-              </Pressable>
-            </View>
-
+            <View style={styles.passRow}><TextInput style={styles.passInput} placeholder="Enter password" placeholderTextColor="#8A96A8" value={password} onChangeText={setPassword} secureTextEntry={!showPassword} autoCapitalize="none" autoCorrect={false} /><Pressable style={styles.showBtn} onPress={() => setShowPassword(!showPassword)}><Text style={styles.showText}>{showPassword ? 'Hide' : 'Show'}</Text></Pressable></View>
             {!!message && <Text style={styles.errorText}>{message}</Text>}
-
-            <Pressable style={[styles.signBtn, loginLoading && { opacity: 0.65 }]} onPress={handleSignIn} disabled={loginLoading}>
-              {loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.signText}>Sign In</Text>}
-            </Pressable>
+            <Pressable style={[styles.signBtn, loginLoading && { opacity: 0.65 }]} onPress={handleSignIn} disabled={loginLoading}>{loginLoading ? <ActivityIndicator color="#fff" /> : <Text style={styles.signText}>Sign In</Text>}</Pressable>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -515,628 +222,109 @@ export default function App() {
 }
 
 function MainApp({ session, onLogout }) {
-  const [tab, setTab] = useState('Dashboard');
+  const defaults = useMemo(() => defaultDates(), []);
   const [search, setSearch] = useState('');
+  const [dash, setDash] = useState(normalizeDashboard({}));
+  const [raw, setRaw] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [range, setRange] = useState('month');
+  const [userId, setUserId] = useState(0);
+  const [fromDate, setFromDate] = useState(defaults.from);
+  const [toDate, setToDate] = useState(defaults.to);
+  const [pickerFor, setPickerFor] = useState(null);
+  const [dropdownFor, setDropdownFor] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const touchStart = useRef({ x: 0, y: 0 });
+  const initial = first(session.username, session.email, 'U').slice(0, 1).toUpperCase();
 
-  const initial = (session.username || 'U').slice(0, 1).toUpperCase();
-
+  const loadDashboard = useCallback(async (opts = {}) => {
+    const nextRange = opts.range ?? range;
+    const nextFrom = opts.fromDate ?? fromDate;
+    const nextTo = opts.toDate ?? toDate;
+    const nextUserId = opts.userId ?? userId;
+    setLoading(true); setErr('');
+    try {
+      const params = { range: nextRange };
+      if (nextRange === 'custom') { params.from = nextFrom; params.to = nextTo; }
+      if (Number(nextUserId) > 0) params.user_id = nextUserId;
+      const data = await apiGet(session, 'dashboard.full', params);
+      setRaw(data); setDash(normalizeDashboard(data));
+    } catch (e) { setErr(e?.message || 'Unable to load dashboard'); }
+    finally { setLoading(false); }
+  }, [session, range, fromDate, toDate, userId]);
+  useEffect(() => { loadDashboard({ range: 'month', fromDate: defaults.from, toDate: defaults.to, userId: 0 }); }, []);
+  function applyDashboard() { loadDashboard({ range, fromDate, toDate, userId }); }
+  function chooseRange(next) { setRange(next); setDropdownFor(null); if (next !== 'custom') loadDashboard({ range: next, fromDate, toDate, userId }); }
+  function chooseUser(next) { setUserId(Number(next)); setDropdownFor(null); loadDashboard({ range, fromDate, toDate, userId: Number(next) }); }
+  const selectedUserLabel = first((dash.userOptions || []).find((u) => Number(u.id) === Number(userId))?.name, 'All Users');
+  const rangeTitle = range === 'today' ? 'Today' : range === 'week' ? 'This Week' : range === 'year' ? 'This Year' : range === 'custom' ? 'Custom' : 'This Month';
+  function onTouchStart(e) { const t = e.nativeEvent; touchStart.current = { x: t.pageX, y: t.pageY }; }
+  function onTouchEnd(e) { const t = e.nativeEvent; const start = touchStart.current; const width = Dimensions.get('window').width; if (start.x > width - 36 && start.x - t.pageX > 55) setProfileOpen(true); }
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.topBar}>
-        <View style={styles.topSearch}>
-          <Text style={styles.searchIcon}>âŒ•</Text>
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search Growin..."
-            placeholderTextColor="#97A3B6"
-            value={search}
-            onChangeText={setSearch}
-          />
-        </View>
-        <Pressable style={styles.plusBtn}>
-          <Text style={styles.plusText}>ï¼‹</Text>
-        </Pressable>
-        <Pressable style={styles.bellBtn}>
-          <Text style={styles.bellDot}>â—</Text>
-        </Pressable>
-        <Pressable style={styles.profileBtn} onPress={onLogout}>
-          <Text style={styles.profileText}>{initial}</Text>
-        </Pressable>
-      </View>
-
-      <View style={{ flex: 1 }}>
-        {tab === 'Dashboard' ? (
-          <DashboardScreen session={session} setTab={setTab} />
-        ) : (
-          <ModuleScreen title={tab} session={session} setTab={setTab} />
-        )}
-      </View>
-
-      <View style={styles.footerNav}>
-        {['Dashboard', 'Queries', 'Itinerary', 'Payments', 'More'].map((name) => (
-          <Pressable key={name} style={styles.navItem} onPress={() => setTab(name)}>
-            <View style={[styles.navCircle, tab === name && styles.navCircleActive]}>
-              <Text style={[styles.navIcon, tab === name && styles.navIconActive]}>{navIcon(name)}</Text>
-            </View>
-            <Text style={[styles.navText, tab === name && styles.navActive]}>{name}</Text>
-          </Pressable>
-        ))}
-      </View>
+    <SafeAreaView style={styles.safe} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <TopHeader search={search} setSearch={setSearch} initial={initial} notificationsCount={dash.notificationsCount} onBell={() => setNotificationsOpen(true)} onProfile={() => setProfileOpen(true)} />
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.dashboardWrap} refreshControl={<RefreshControl refreshing={loading} onRefresh={applyDashboard} tintColor="#06C36B" />}>
+        <FilterPanel selectedUserLabel={selectedUserLabel} selectedRangeLabel={rangeTitle} fromDate={fromDate} toDate={toDate} setDropdownFor={setDropdownFor} setPickerFor={setPickerFor} applyDashboard={applyDashboard} />
+        {err ? <View style={styles.errorCard}><Text style={styles.errorStrong}>Dashboard API Error</Text><Text style={styles.errorText}>{err}</Text></View> : null}
+        {loading && !raw ? <View style={styles.centerBlock}><ActivityIndicator color="#06C36B" /><Text style={styles.muted}>Loading live dashboard...</Text></View> : null}
+        <KpiCards cards={dash.cards} />
+        <TodayFollowups items={dash.followups} />
+        <QueryPipeline items={dash.pipeline} />
+        <PendingSupplierPayments items={dash.supplierPayments} />
+        <UpcomingTours items={dash.tours} />
+        <TopDestinations items={dash.topDestinations} />
+        <TeamPerformance items={dash.team} />
+        <DestinationWeather items={dash.weather} />
+      </ScrollView>
+      <NotificationModal visible={notificationsOpen} onClose={() => setNotificationsOpen(false)} dash={dash} />
+      <ProfileDrawer visible={profileOpen} onClose={() => setProfileOpen(false)} session={session} dash={dash} onLogout={onLogout} />
+      <DropdownModal visible={!!dropdownFor} dropdownFor={dropdownFor} onClose={() => setDropdownFor(null)} users={dash.userOptions} chooseUser={chooseUser} range={range} chooseRange={chooseRange} />
+      <DatePickerModal visible={!!pickerFor} pickerFor={pickerFor} fromDate={fromDate} toDate={toDate} setFromDate={setFromDate} setToDate={setToDate} onClose={() => setPickerFor(null)} />
     </SafeAreaView>
   );
 }
 
-function navIcon(name) {
-  if (name === 'Dashboard') return 'âŒ‚';
-  if (name === 'Queries') return 'â˜°';
-  if (name === 'Itinerary') return 'â–¤';
-  if (name === 'Payments') return 'â–£';
-  return 'â€¢â€¢â€¢';
+function TopHeader({ search, setSearch, initial, notificationsCount, onBell, onProfile }) {
+  return <View style={styles.topBar}><View style={styles.searchPill}><Ionicons name="search" size={15} color="#8A96A8" /><TextInput style={styles.searchInput} placeholder="Search" placeholderTextColor="#8A96A8" value={search} onChangeText={setSearch} /></View><Pressable style={styles.bellBtn} onPress={onBell}><Ionicons name="notifications-outline" size={21} color="#D8FFF0" />{notificationsCount > 0 ? <View style={styles.notifyBadge}><Text style={styles.notifyBadgeText}>{notificationsCount > 99 ? '99+' : notificationsCount}</Text></View> : null}</Pressable><Pressable style={styles.profileBtn} onPress={onProfile}><Text style={styles.profileText}>{initial}</Text></Pressable></View>;
 }
-
-function DashboardScreen({ session, setTab }) {
-  const [dash, setDash] = useState({});
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState('');
-
-  const loadDashboard = useCallback(async () => {
-    setLoading(true);
-    setErr('');
-
-    try {
-      const data = await apiGet(session, 'dashboard.full', { range: 'month' });
-      setDash(data || {});
-    } catch (e) {
-      setErr(e?.message || 'Unable to load dashboard');
-    } finally {
-      setLoading(false);
-    }
-  }, [session]);
-
-  useEffect(() => {
-    loadDashboard();
-  }, [loadDashboard]);
-
-  const kpis = useMemo(() => normalizeKpis(dash), [dash]);
-  const trend = useMemo(() => normalizeTrend(dash), [dash]);
-  const pipeline = useMemo(() => normalizeProgressList(dash, ['pipeline', 'stage_pipeline', 'query_pipeline']), [dash]);
-  const serviceMix = useMemo(() => normalizeProgressList(dash, ['service_mix', 'serviceMix', 'services_mix']), [dash]);
-  const modules = useMemo(() => normalizeModules(dash, kpis), [dash, kpis]);
-  const recent = useMemo(() => normalizeRecent(dash), [dash]);
-  const followups = useMemo(() => normalizeFollowups(dash), [dash]);
-  const pendingPayments = useMemo(() => normalizePayments(dash), [dash]);
-  const topDestinations = useMemo(() => normalizeProgressList(dash, ['top_destinations', 'destinations', 'destination_mix']), [dash]);
-  const leadSources = useMemo(() => normalizeProgressList(dash, ['lead_sources', 'leadSources', 'sources']), [dash]);
-  const team = useMemo(() => firstArray(dash, ['team', 'staff', 'users', 'team_performance']), [dash]);
-  const weather = useMemo(() => normalizeWeather(dash), [dash]);
-  const loginSummary = useMemo(() => firstObject(dash, ['login', 'login_summary', 'app_login', 'login_count']), [dash]);
-  const quickActions = useMemo(() => firstArray(dash, ['quick_actions', 'actions', 'shortcuts']), [dash]);
-
-  const companyName = firstPath(dash, ['organization.company_name', 'company.name', 'company_name'], session.companyName);
-  const period = firstPath(dash, ['period.label', 'current_period', 'period'], 'Current - Period');
-  const userName = session?.username || session?.user?.name || 'Staff';
-
-  return (
-    <ScrollView
-      style={{ flex: 1 }}
-      contentContainerStyle={styles.dashboardWrap}
-      refreshControl={<RefreshControl refreshing={loading} onRefresh={loadDashboard} tintColor="#12B76A" />}
-    >
-      <View style={styles.heroCard}>
-        <Text style={styles.heroSmall}>Dynamic Dashboard v2</Text>
-        <Text style={styles.heroTitle}>Organization Dashboard</Text>
-        <Text style={styles.heroCompany}>{companyName}</Text>
-        <Text style={styles.heroPeriod}>{period}</Text>
-        <Text style={styles.heroUser}>Logged in: {userName}</Text>
-      </View>
-
-      {err ? (
-        <View style={styles.errorCard}>
-          <Text style={styles.errorStrong}>Dashboard API Error</Text>
-          <Text style={styles.errorText}>{err}</Text>
-        </View>
-      ) : null}
-
-      {loading && !Object.keys(dash || {}).length ? (
-        <View style={styles.centerBlock}>
-          <ActivityIndicator color="#12B76A" />
-          <Text style={styles.muted}>Loading live CRM dashboard...</Text>
-        </View>
-      ) : null}
-
-      <KpiGrid kpis={kpis} />
-
-      <MonthlyTrend trend={trend} />
-
-      <View style={styles.twoCol}>
-        <SmallProgressCard title="Pipeline" items={pipeline} empty="No pipeline data" />
-        <SmallProgressCard title="Service Mix" items={serviceMix} empty="No service data" />
-      </View>
-
-      <ModuleGrid modules={modules} setTab={setTab} />
-
-      <ListCard title="Recent Queries" right="Latest" items={recent} empty="No recent queries" type="query" />
-
-      <ListCard title="Today Follow-ups" right="Today" items={followups} empty="No follow-ups today" type="followup" />
-
-      <ListCard title="Pending Payments" right="Due" items={pendingPayments} empty="No pending payments" type="payment" />
-
-      <ProgressCard title="Top Destinations" right="Live" items={topDestinations} empty="No destination data" />
-
-      <ProgressCard title="Lead Sources" right="Source" items={leadSources} empty="No lead source data" />
-
-      <TeamCard team={team} />
-
-      <WeatherCard weather={weather} />
-
-      <LoginSummaryCard loginSummary={loginSummary} />
-
-      <QuickActionsCard actions={quickActions} setTab={setTab} />
-
-      <View style={{ height: 8 }} />
-    </ScrollView>
-  );
+function FilterPanel({ selectedUserLabel, selectedRangeLabel, fromDate, toDate, setDropdownFor, setPickerFor, applyDashboard }) {
+  return <View style={styles.filterHero}><View style={styles.filterTitleRow}><View style={styles.gaugeIcon}><Ionicons name="speedometer-outline" size={18} color="#fff" /></View><View style={{ flex: 1 }}><Text style={styles.filterTitle}>Organization Dashboard</Text><Text style={styles.filterSubtitle}>All users • Live travel CRM overview • {ddmmyyyy(fromDate)} - {ddmmyyyy(toDate)}</Text></View></View><Pressable style={styles.dropdownWide} onPress={() => setDropdownFor('dashboard')}><Text style={styles.dropdownText}>Organization Dashboard</Text><Ionicons name="chevron-down" size={16} color="#03172D" /></Pressable><View style={styles.filterTwoCol}><Pressable style={styles.dropdownHalf} onPress={() => setDropdownFor('user')}><Text style={styles.dropdownText}>{selectedUserLabel}</Text><Ionicons name="chevron-down" size={16} color="#03172D" /></Pressable><Pressable style={styles.dropdownHalf} onPress={() => setDropdownFor('range')}><Text style={styles.dropdownText}>{selectedRangeLabel}</Text><Ionicons name="chevron-down" size={16} color="#03172D" /></Pressable></View><View style={styles.filterTwoCol}><Pressable style={styles.dateHalf} onPress={() => setPickerFor('from')}><Ionicons name="calendar-outline" size={16} color="#006D68" /><Text style={styles.dateBig}>{ddmmyyyy(fromDate)}</Text></Pressable><Pressable style={styles.dateHalf} onPress={() => setPickerFor('to')}><Ionicons name="calendar-outline" size={16} color="#006D68" /><Text style={styles.dateBig}>{ddmmyyyy(toDate)}</Text></Pressable></View><Pressable style={styles.applyBigBtn} onPress={applyDashboard}><Text style={styles.applyBigText}>Apply</Text></Pressable></View>;
 }
-
-function KpiGrid({ kpis }) {
-  const hasData = kpis.some((k) => Number(k.value || 0) > 0);
-
-  return (
-    <View style={styles.sectionBlock}>
-      {!hasData ? <Text style={styles.sectionNote}>CRM se KPI data nahi mila.</Text> : null}
-      <View style={styles.kpiGrid}>
-        {kpis.slice(0, 10).map((item, index) => (
-          <View key={`${item.key || item.title}-${index}`} style={styles.kpiCard}>
-            <Text style={styles.kpiValue}>{valueText(item)}</Text>
-            <Text style={styles.kpiTitle}>{item.title}</Text>
-            {!!item.sub && <Text style={styles.kpiSub}>{item.sub}</Text>}
-          </View>
-        ))}
-      </View>
-    </View>
-  );
-}
-
-function MonthlyTrend({ trend }) {
-  const max = Math.max(1, ...trend.map((m) => Math.max(Number(m.total || 0), Number(m.won || 0))));
-
-  return (
-    <Card title="Monthly Trend" right="Live">
-      {trend.length ? (
-        <>
-          <View style={styles.chartArea}>
-            {trend.slice(0, 8).map((m, index) => (
-              <View key={`${m.label}-${index}`} style={styles.chartCol}>
-                <View style={styles.chartBars}>
-                  <View style={[styles.barTotal, { height: Math.max(6, (Number(m.total || 0) / max) * 110) }]} />
-                  <View style={[styles.barWon, { height: Math.max(6, (Number(m.won || 0) / max) * 110) }]} />
-                </View>
-                <Text style={styles.chartLabel}>{m.label}</Text>
-              </View>
-            ))}
-          </View>
-          <View style={styles.legendRow}>
-            <Text style={styles.legendTotal}>â— Total</Text>
-            <Text style={styles.legendWon}>â— Won</Text>
-          </View>
-        </>
-      ) : (
-        <EmptyText text="No monthly trend data" />
-      )}
-    </Card>
-  );
-}
-
-function SmallProgressCard({ title, items, empty }) {
-  const max = Math.max(1, ...items.map((x) => Number(x.value || 0)));
-
-  return (
-    <View style={styles.smallCard}>
-      <Text style={styles.smallTitle}>{title}</Text>
-      {items.length ? (
-        items.slice(0, 5).map((item, index) => (
-          <ProgressLine key={`${item.label}-${index}`} item={item} max={max} compact />
-        ))
-      ) : (
-        <Text style={styles.muted}>{empty}</Text>
-      )}
-    </View>
-  );
-}
-
-function ProgressCard({ title, right, items, empty }) {
-  const max = Math.max(1, ...items.map((x) => Number(x.value || 0)));
-
-  return (
-    <Card title={title} right={right}>
-      {items.length ? (
-        items.slice(0, 10).map((item, index) => <ProgressLine key={`${item.label}-${index}`} item={item} max={max} />)
-      ) : (
-        <EmptyText text={empty} />
-      )}
-    </Card>
-  );
-}
-
-function ProgressLine({ item, max, compact }) {
-  const percent = Math.min(100, Math.round((Number(item.value || 0) / max) * 100));
-  return (
-    <View style={compact ? styles.progressRowCompact : styles.progressRow}>
-      <View style={styles.progressTop}>
-        <Text style={compact ? styles.progressLabelCompact : styles.progressLabel} numberOfLines={1}>
-          {item.label}
-        </Text>
-        <Text style={styles.progressValue}>{shortNumber(item.value)}</Text>
-      </View>
-      <View style={styles.progressTrack}>
-        <View style={[styles.progressFill, { width: `${Math.max(4, percent)}%` }]} />
-      </View>
-    </View>
-  );
-}
-
-function ModuleGrid({ modules, setTab }) {
-  return (
-    <Card title="All Sections" right="Open">
-      <View style={styles.moduleGrid}>
-        {modules.map((m, index) => (
-          <Pressable key={`${m.key}-${index}`} style={styles.moduleCard} onPress={() => setTab(moduleToTab(m.title, m.key))}>
-            <Text style={styles.moduleIcon}>{m.icon || 'â–¦'}</Text>
-            <Text style={styles.moduleName} numberOfLines={1}>{m.title}</Text>
-            <Text style={styles.moduleCount}>{m.format === 'money' ? money(m.count) : String(m.count ?? '')}</Text>
-          </Pressable>
-        ))}
-      </View>
-    </Card>
-  );
-}
-
-function ListCard({ title, right, items, empty, type }) {
-  return (
-    <Card title={title} right={right}>
-      {items.length ? (
-        items.slice(0, 12).map((item, index) => <ListRow key={`${item.id}-${index}`} item={item} type={type} />)
-      ) : (
-        <EmptyText text={empty} />
-      )}
-    </Card>
-  );
-}
-
-function ListRow({ item, type }) {
-  if (type === 'payment') {
-    return (
-      <View style={styles.listRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.rowTitle} numberOfLines={1}>{item.title}</Text>
-          <Text style={styles.rowMeta}>{item.due || 'Due date'} â€¢ {item.status}</Text>
-        </View>
-        <Text style={styles.rowAmount}>{money(item.amount)}</Text>
-      </View>
-    );
-  }
-
-  if (type === 'followup') {
-    return (
-      <View style={styles.listRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={styles.rowTitle} numberOfLines={1}>{item.title}</Text>
-          <Text style={styles.rowMeta}>{item.time || 'Today'} â€¢ {item.note || 'Follow-up'}</Text>
-        </View>
-        <Text style={styles.statusPill}>Open</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.listRow}>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.rowTitle} numberOfLines={1}>{item.title}</Text>
-        <Text style={styles.rowMeta}>{item.meta || 'Destination'} â€¢ {item.status || 'Open'}</Text>
-      </View>
-      <Text style={styles.statusPill}>{item.status || 'Open'}</Text>
-    </View>
-  );
-}
-
-function TeamCard({ team }) {
-  return (
-    <Card title="Team / Staff" right="Users">
-      {team.length ? (
-        team.slice(0, 12).map((u, index) => {
-          const name = u.name || u.display_name || u.username || u.email || `Staff ${index + 1}`;
-          const role = u.role || u.profile || u.designation || u.status || 'Staff';
-          const value = u.value ?? u.count ?? u.queries ?? u.sales ?? '';
-          return (
-            <View key={`${name}-${index}`} style={styles.teamRow}>
-              <View style={styles.avatarMini}>
-                <Text style={styles.avatarMiniText}>{String(name).slice(0, 1).toUpperCase()}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.rowTitle} numberOfLines={1}>{name}</Text>
-                <Text style={styles.rowMeta}>{role}</Text>
-              </View>
-              <Text style={styles.rowAmount}>{value !== '' ? shortNumber(value) : 'â€¢'}</Text>
-            </View>
-          );
-        })
-      ) : (
-        <EmptyText text="No staff/team data" />
-      )}
-    </Card>
-  );
-}
-
-function WeatherCard({ weather }) {
-  return (
-    <Card title="Destination Weather" right={weather.length ? 'Live' : 'Off'}>
-      {weather.length ? (
-        <View style={styles.weatherGrid}>
-          {weather.slice(0, 6).map((w, index) => {
-            const name = w.name || w.city || w.location || `City ${index + 1}`;
-            const temp = w.temperature ?? w.temp ?? w.current_temp ?? '--';
-            const condition = w.condition || w.description || w.status || 'Weather';
-            return (
-              <View key={`${name}-${index}`} style={styles.weatherMini}>
-                <Text style={styles.weatherCity} numberOfLines={1}>{name}</Text>
-                <Text style={styles.weatherTemp}>{temp !== '--' ? `${temp}Â°` : '--'}</Text>
-                <Text style={styles.weatherCond} numberOfLines={1}>{condition}</Text>
-              </View>
-            );
-          })}
-        </View>
-      ) : (
-        <EmptyText text="Weather data available nahi hai." />
-      )}
-    </Card>
-  );
-}
-
-function LoginSummaryCard({ loginSummary }) {
-  const entries = Object.keys(loginSummary || {})
-    .filter((key) => typeof loginSummary[key] !== 'object')
-    .slice(0, 8)
-    .map((key) => ({ label: titleize(key), value: loginSummary[key] }));
-
-  return (
-    <Card title="App Login Summary" right="Staff">
-      {entries.length ? (
-        entries.map((item, index) => (
-          <View key={`${item.label}-${index}`} style={styles.summaryRow}>
-            <Text style={styles.summaryLabel}>{item.label}</Text>
-            <Text style={styles.summaryValue}>{String(item.value)}</Text>
-          </View>
-        ))
-      ) : (
-        <EmptyText text="Login summary data nahi mila." />
-      )}
-    </Card>
-  );
-}
-
-function QuickActionsCard({ actions, setTab }) {
-  const fallback = [
-    { title: 'Add Query', target: 'Queries' },
-    { title: 'Create Itinerary', target: 'Itinerary' },
-    { title: 'Record Payment', target: 'Payments' },
-    { title: 'More Modules', target: 'More' },
-  ];
-
-  const list = actions.length
-    ? actions.map((a, index) => ({
-        title: a.title || a.label || a.name || `Action ${index + 1}`,
-        target: a.target || a.module || 'More',
-      }))
-    : fallback;
-
-  return (
-    <Card title="Quick Actions" right="Open">
-      <View style={styles.quickGrid}>
-        {list.slice(0, 8).map((a, index) => (
-          <Pressable key={`${a.title}-${index}`} style={styles.quickAction} onPress={() => setTab(moduleToTab(a.target, a.target))}>
-            <Text style={styles.quickPlus}>ï¼‹</Text>
-            <Text style={styles.quickTitle}>{a.title}</Text>
-          </Pressable>
-        ))}
-      </View>
-    </Card>
-  );
-}
-
-function Card({ title, right, children }) {
-  return (
-    <View style={styles.card}>
-      <View style={styles.cardHead}>
-        <Text style={styles.cardTitle}>{title}</Text>
-        {!!right && <Text style={styles.cardRight}>{right}</Text>}
-      </View>
-      {children}
-    </View>
-  );
-}
-
-function EmptyText({ text }) {
-  return <Text style={styles.muted}>{text}</Text>;
-}
-
-function ModuleScreen({ title, setTab }) {
-  const modules = [
-    'Queries',
-    'Itinerary',
-    'Payments',
-    'Company',
-    'WhatsApp',
-    'Email',
-    'Profile',
-    'Users/Staff',
-    'Organization',
-    'Theme',
-  ];
-
-  if (title === 'More') {
-    return (
-      <ScrollView contentContainerStyle={styles.moduleScreenScroll}>
-        <Text style={styles.moduleBig}>More Modules</Text>
-        <Text style={styles.moduleHint}>Staff app ke required modules yaha se open honge.</Text>
-        <View style={styles.moreList}>
-          {modules.map((m) => (
-            <Pressable key={m} style={styles.moreRow} onPress={() => setTab(m)}>
-              <Text style={styles.moreTitle}>{m}</Text>
-              <Text style={styles.moreArrow}>â€º</Text>
-            </Pressable>
-          ))}
-        </View>
-      </ScrollView>
-    );
-  }
-
-  return (
-    <View style={styles.moduleScreen}>
-      <Text style={styles.moduleBig}>{title}</Text>
-      <Text style={styles.moduleHint}>Is module ka native listing/form next API se connect hoga.</Text>
-      <Pressable style={styles.backDashBtn} onPress={() => setTab('Dashboard')}>
-        <Text style={styles.backDashText}>Back to Dashboard</Text>
-      </Pressable>
-    </View>
-  );
-}
-
-const GREEN = '#12B76A';
-const DARK = '#053B46';
-const TEXT = '#111C33';
-const MUTED = '#748094';
-const BG = '#F4FAF8';
-const BORDER = '#DDE7EA';
+function KpiCards({ cards }) { return <View style={styles.kpiGrid}>{cards.map((card) => <View key={card.key} style={styles.kpiCard}><View style={styles.kpiTop}><View style={styles.kpiIconCircle}><Ionicons name={card.icon} size={17} color="#00A86B" /></View><View style={styles.openCircle}><Ionicons name="arrow-up-outline" size={14} color="#06C36B" style={{ transform: [{ rotate: '45deg' }] }} /></View></View><Text style={styles.kpiTitle}>{card.title}</Text><Text style={styles.kpiValue}>{card.format === 'money' ? shortMoney(card.value) : num(card.value)}</Text><Text style={styles.kpiSub}>{card.sub}</Text></View>)}</View>; }
+function Section({ icon, title, subtitle, children }) { return <View style={styles.sectionCard}><View style={styles.sectionHead}><View style={styles.sectionHeadLeft}><View style={styles.sectionIconCircle}><Ionicons name={icon} size={17} color="#00A86B" /></View><View style={{ flex: 1 }}><Text style={styles.sectionTitle}>{title}</Text><Text style={styles.sectionSubtitle}>{subtitle}</Text></View></View><View style={styles.sectionOpen}><Ionicons name="arrow-up-outline" size={14} color="#06C36B" style={{ transform: [{ rotate: '45deg' }] }} /></View></View><View style={styles.sectionBody}>{children}</View></View>; }
+function EmptyBox({ text = 'No records found' }) { return <View style={styles.emptyBox}><Text style={styles.emptyText}>{text}</Text></View>; }
+function TodayFollowups({ items }) { return <Section icon="checkbox-outline" title="Today's Follow-ups" subtitle="Calls, tasks and reminders due today">{items.length ? items.map((x, i) => <ListPill key={x.id || i} title={first(x.title, x.name, x.customer, x.client, x.subject, `Follow-up ${i + 1}`)} sub={first(x.subtitle, x.time, x.date, x.next_followup, x.remarks, 'Today')} right={first(x.status, 'Open')} />) : <EmptyBox />}</Section>; }
+function QueryPipeline({ items }) { const max = Math.max(1, ...items.map((x) => Number(x.value ?? x.count ?? x.total ?? 0))); return <Section icon="git-network-outline" title="Query Pipeline" subtitle="Stage-wise live query distribution">{items.length ? items.map((x, i) => { const value = Number(x.value ?? x.count ?? x.total ?? 0); return <View key={x.id || i} style={styles.pipelineRow}><View style={styles.pipelineTop}><Text style={styles.pipelineLabel}>{first(x.label, x.stage, x.name, `Stage ${i + 1}`)}</Text><Text style={styles.pipelineValue}>{num(value)}</Text></View><View style={styles.pipelineTrack}><View style={[styles.pipelineFill, { width: `${Math.max(3, Math.min(100, (value / max) * 100))}%` }]} /></View></View>; }) : <EmptyBox text="No pipeline data" />}</Section>; }
+function PendingSupplierPayments({ items }) { return <Section icon="cash-outline" title="Pending Supplier Payments" subtitle="Due and unpaid supplier payables">{items.length ? items.map((x, i) => <AmountPill key={x.id || i} title={first(x.supplier, x.name, x.title, x.client, `Supplier ${i + 1}`)} sub={first(x.subtitle, `Due: ${first(x.due_date, x.date, '-')}`)} amount={x.amount ?? x.pending ?? x.balance ?? x.value} />) : <EmptyBox text="No pending supplier payments" />}</Section>; }
+function UpcomingTours({ items }) { return <Section icon="airplane-outline" title="Ongoing & Upcoming Tours" subtitle="Current and upcoming confirmed tour schedule">{items.length ? items.map((x, i) => <StatusPill key={x.id || i} title={first(x.title, x.name, x.customer, x.client, `Tour ${i + 1}`)} sub={`${first(x.destination, x.city, 'Destination')} • ${first(x.from_date, x.from, x.start_date, x.date, '')}${first(x.to_date, x.to, x.end_date) ? ' - ' + first(x.to_date, x.to, x.end_date) : ''}`} status={statusText(x.status)} />) : <EmptyBox text="No ongoing or upcoming tours" />}</Section>; }
+function TopDestinations({ items }) { return <Section icon="location-outline" title="Top Destinations" subtitle="Total queries and Won confirmations">{items.length ? items.slice(0, 5).map((x, i) => <DualPill key={x.id || i} title={first(x.title, x.name, x.destination, 'Not available')} total={x.total ?? x.value ?? x.count} won={x.won ?? x.confirmed ?? x.confirmed_count} />) : <EmptyBox text="No destination data" />}</Section>; }
+function TeamPerformance({ items }) { return <Section icon="people-outline" title="Team Performance" subtitle="Total queries and Won confirmations user-wise">{items.length ? items.map((x, i) => <DualPill key={x.id || i} title={first(x.title, x.name, x.display_name, x.username, x.email, `Staff ${i + 1}`)} total={x.total ?? x.value ?? x.count} won={x.won ?? x.confirmed ?? x.confirmed_count} />) : <EmptyBox text="No team data" />}</Section>; }
+function DestinationWeather({ items }) { return <Section icon="partly-sunny-outline" title="Destination Weather" subtitle="Selected travel cities">{items.length ? <>{items.map((w, i) => <View key={i} style={styles.weatherRow}><Text style={styles.weatherCity}>{first(w.name, w.city, w.destination)}</Text><View style={styles.weatherRight}><Ionicons name={weatherIconName(w)} size={26} color="#667085" /><Text style={styles.weatherTemp}>{first(w.temperature, w.temp, '--')}°</Text></View></View>)}<Text style={styles.weatherUpdated}>Updated {new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</Text></> : <EmptyBox text="No weather data" />}</Section>; }
+function ListPill({ title, sub, right }) { return <View style={styles.listPill}><View style={{ flex: 1 }}><Text style={styles.listPillTitle}>{title}</Text><Text style={styles.listPillSub}>{sub}</Text></View>{right ? <Text style={styles.listPillRight}>{right}</Text> : null}</View>; }
+function AmountPill({ title, sub, amount }) { return <View style={styles.listPill}><View style={{ flex: 1 }}><Text style={styles.listPillTitle}>{title}</Text><Text style={styles.listPillSub}>{sub}</Text></View><View style={styles.amountBadge}><Text style={styles.amountText}>{shortMoney(amount)}</Text></View></View>; }
+function StatusPill({ title, sub, status }) { return <View style={styles.listPill}><View style={{ flex: 1 }}><Text style={styles.listPillTitle}>{title}</Text><Text style={styles.listPillSub}>{sub}</Text></View><View style={styles.statusBadge}><Text style={styles.statusText}>{status}</Text></View></View>; }
+function DualPill({ title, total, won }) { return <View style={styles.dualPill}><Text style={styles.dualTitle}>{title}</Text><View style={styles.dualCounts}><View style={styles.totalBubble}><Text style={styles.totalBubbleText}>{num(total)}</Text></View><View style={styles.wonBubble}><Text style={styles.wonBubbleText}>{num(won)}</Text></View></View></View>; }
+function NotificationModal({ visible, onClose, dash }) { const list = dash.notifications; return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}><Pressable style={styles.modalShade} onPress={onClose}><View style={styles.notifyPanel}><View style={styles.panelHead}><Text style={styles.panelTitle}>Reminders</Text><Pressable onPress={onClose} style={styles.closeCircle}><Ionicons name="close" size={20} color="#667085" /></Pressable></View><View style={styles.unreadPill}><Text style={styles.unreadText}>{dash.notificationsCount} unread</Text></View><ScrollView style={{ maxHeight: 520 }} showsVerticalScrollIndicator>{list.length ? list.map((x, i) => <View key={x.id || i} style={styles.notifyItem}><View style={styles.notifyIcon}><Ionicons name={String(first(x.kind, x.type)).toLowerCase().includes('call') ? 'call-outline' : String(first(x.kind, x.type)).toLowerCase().includes('billing') ? 'receipt-outline' : 'calendar-outline'} size={20} color="#00A86B" /></View><View style={{ flex: 1 }}><Text style={styles.notifyTitle}>{first(x.title, x.name, x.subject, `Reminder ${i + 1}`)}</Text><View style={styles.notifyMeta}><Text style={styles.notifyKind}>{first(x.kind, x.type, 'Reminder')}</Text><Text style={styles.notifyTime}>{first(x.time_display, x.time, x.date, x.created_at)}</Text></View>{first(x.desc, x.description, x.message, x.subtitle) ? <Text style={styles.notifyDesc}>{first(x.desc, x.description, x.message, x.subtitle)}</Text> : null}</View></View>) : <EmptyBox text="No reminders" />}</ScrollView></View></Pressable></Modal>; }
+function ProfileDrawer({ visible, onClose, session, dash, onLogout }) { const slide = useRef(new Animated.Value(Dimensions.get('window').width)).current; useEffect(() => { Animated.timing(slide, { toValue: visible ? 0 : Dimensions.get('window').width, duration: 230, useNativeDriver: true }).start(); }, [visible, slide]); const user = session.user || {}; const userName = first(user.name, user.display_name, session.username, 'Travbizz'); const userId = first(user.user_id, user.code, user.id, 'USR0001'); const role = first(user.role, user.profile, user.designation, 'Administrator'); const email = first(user.email, session.email, 'crm@travbizz.com'); const license = dash.license || {}; return <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}><View style={styles.drawerOverlay}><Pressable style={{ flex: 1 }} onPress={onClose} /><Animated.View style={[styles.drawer, { transform: [{ translateX: slide }] }]}><ScrollView contentContainerStyle={styles.drawerContent}><View style={styles.drawerTop}><View style={styles.profileLarge}><Text style={styles.profileLargeText}>{userName.slice(0, 1).toUpperCase()}</Text></View><View style={{ flex: 1 }}><Text style={styles.drawerName}>{userName}</Text><Text style={styles.drawerUserId}>User ID: {userId}</Text><Text style={styles.drawerSub}>{role} • {email}</Text><View style={styles.drawerLinks}><Text style={styles.drawerLinkBlue}>My Profile</Text><Pressable onPress={onLogout}><Text style={styles.drawerLinkRed}>Sign Out</Text></Pressable></View></View><Pressable onPress={onClose} style={styles.drawerClose}><Ionicons name="close" size={20} color="#667085" /></Pressable></View><Text style={styles.drawerSectionTitle}>My Organization</Text><View style={styles.orgRow}><View style={styles.orgIcon}><Text style={styles.orgIconText}>G</Text></View><View><Text style={styles.orgName}>{first(dash.company, session.companyName, 'Growin')}</Text><Text style={styles.orgSub}>Growin CRM</Text><Text style={styles.orgSub}>{first(session.crmUrl, session.apiBaseUrl)}</Text></View></View><Text style={styles.drawerSectionTitle}>Account</Text>{['My Profile', 'Change Password', 'Notification Settings', 'Login History'].map((x, i) => <View key={x} style={styles.accountRow}><Ionicons name={['person-outline', 'lock-closed-outline', 'notifications-outline', 'time-outline'][i]} size={18} color="#98A2B3" /><Text style={styles.accountText}>{x}</Text></View>)}<Text style={styles.drawerSectionTitle}>License</Text><View style={styles.licenseGrid}><LicenseBox label="Plan" value={first(license.plan, license.status, 'Active')} /><LicenseBox label="Valid Till" value={first(license.valid_till, license.expiry, '7 Apr 2030')} /><LicenseBox label="Users" value={first(license.users, license.max_users, '300')} /></View></ScrollView></Animated.View></View></Modal>; }
+function LicenseBox({ label, value }) { return <View style={styles.licenseBox}><Text style={styles.licenseLabel}>{label}</Text><Text style={styles.licenseValue}>{value}</Text></View>; }
+function DropdownModal({ visible, dropdownFor, onClose, users, chooseUser, chooseRange }) { const rangeItems = [{ key: 'today', title: 'Today' }, { key: 'week', title: 'This Week' }, { key: 'month', title: 'This Month' }, { key: 'year', title: 'This Year' }, { key: 'custom', title: 'Custom' }]; const isUser = dropdownFor === 'user'; const isRange = dropdownFor === 'range'; const list = isUser ? users : isRange ? rangeItems : [{ key: 'organization', title: 'Organization Dashboard' }]; return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}><Pressable style={styles.modalShade} onPress={onClose}><View style={styles.dropdownPanel}><View style={styles.panelHead}><Text style={styles.panelTitle}>{isUser ? 'Select User' : isRange ? 'Select Period' : 'Dashboard'}</Text><Pressable onPress={onClose} style={styles.closeCircle}><Ionicons name="close" size={20} color="#667085" /></Pressable></View>{list.map((x, i) => <Pressable key={x.key || x.id || i} style={styles.optionRow} onPress={() => isUser ? chooseUser(x.id || 0) : isRange ? chooseRange(x.key) : onClose()}><Text style={styles.optionText}>{first(x.title, x.name, x.display_name, 'Option')}</Text></Pressable>)}</View></Pressable></Modal>; }
+function DatePickerModal({ visible, pickerFor, fromDate, toDate, setFromDate, setToDate, onClose }) { const value = pickerFor === 'from' ? parseYMD(fromDate) : parseYMD(toDate); function onChange(event, selectedDate) { if (Platform.OS !== 'ios') onClose(); if (!selectedDate) return; const ymd = formatYMD(selectedDate); if (pickerFor === 'from') setFromDate(ymd); if (pickerFor === 'to') setToDate(ymd); } return <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}><View style={styles.dateModalShade}><View style={styles.datePickerCard}><View style={styles.panelHead}><Text style={styles.panelTitle}>{pickerFor === 'from' ? 'Select From Date' : 'Select To Date'}</Text><Pressable onPress={onClose} style={styles.closeCircle}><Ionicons name="close" size={20} color="#667085" /></Pressable></View><DateTimePicker value={value} mode="date" display={Platform.OS === 'ios' ? 'inline' : 'default'} onChange={onChange} />{Platform.OS === 'ios' ? <Pressable style={styles.doneBtn} onPress={onClose}><Text style={styles.doneText}>Done</Text></Pressable> : null}</View></View></Modal>; }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: BG },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  muted: { color: MUTED, fontWeight: '700', lineHeight: 20 },
-
-  loginWrap: { flexGrow: 1, padding: 24, justifyContent: 'center' },
-  loginLogoCircle: { width: 74, height: 74, borderRadius: 26, backgroundColor: GREEN, alignItems: 'center', justifyContent: 'center', alignSelf: 'center', marginBottom: 14 },
-  loginLogoText: { color: '#fff', fontSize: 38, fontWeight: '900' },
-  logo: { fontSize: 34, fontWeight: '900', color: DARK, textAlign: 'center' },
-  logoSub: { fontSize: 15, fontWeight: '700', color: GREEN, textAlign: 'center', marginTop: 4, marginBottom: 22 },
-  loginCard: { backgroundColor: '#fff', borderRadius: 26, padding: 18, borderWidth: 1, borderColor: BORDER },
-  loginTitle: { fontSize: 26, fontWeight: '900', color: TEXT, textAlign: 'center' },
-  loginSub: { fontSize: 14, color: '#6B7688', textAlign: 'center', marginTop: 7, marginBottom: 22 },
-  label: { fontSize: 13, color: '#43536A', fontWeight: '800', marginBottom: 8, marginLeft: 4 },
-  input: { height: 56, borderRadius: 17, backgroundColor: '#fff', borderWidth: 1, borderColor: BORDER, paddingHorizontal: 18, fontSize: 16, marginBottom: 15, color: TEXT },
-  passRow: { height: 56, borderRadius: 17, backgroundColor: '#fff', borderWidth: 1, borderColor: BORDER, paddingLeft: 18, paddingRight: 8, marginBottom: 15, flexDirection: 'row', alignItems: 'center' },
-  passInput: { flex: 1, fontSize: 16, color: TEXT, height: '100%' },
-  showBtn: { paddingHorizontal: 13, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E9F7F1' },
-  showText: { color: '#069957', fontWeight: '900', fontSize: 13 },
-  errorText: { color: '#B42318', fontSize: 14, fontWeight: '700', lineHeight: 20 },
-  signBtn: { height: 56, borderRadius: 17, backgroundColor: GREEN, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
-  signText: { color: '#fff', fontSize: 17, fontWeight: '900' },
-
-  topBar: { backgroundColor: DARK, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 12 },
-  topSearch: { flex: 1, height: 54, borderRadius: 25, backgroundColor: '#fff', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, marginRight: 10 },
-  searchIcon: { fontSize: 20, color: '#93A1B2', marginRight: 8 },
-  searchInput: { flex: 1, fontSize: 17, color: TEXT },
-  plusBtn: { width: 54, height: 54, borderRadius: 27, backgroundColor: GREEN, alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  plusText: { color: '#fff', fontSize: 34, fontWeight: '900', lineHeight: 38 },
-  bellBtn: { width: 42, height: 54, alignItems: 'center', justifyContent: 'center', marginRight: 8 },
-  bellDot: { color: '#FF4D5A', fontSize: 22 },
-  profileBtn: { width: 54, height: 54, borderRadius: 27, backgroundColor: '#B7EBC7', alignItems: 'center', justifyContent: 'center' },
-  profileText: { color: DARK, fontWeight: '900', fontSize: 18 },
-
-  dashboardWrap: { padding: 20, paddingBottom: 94 },
-  heroCard: { backgroundColor: '#087B69', borderRadius: 28, padding: 24, marginBottom: 18 },
-  heroSmall: { color: '#D7FBE8', fontSize: 15, fontWeight: '900', marginBottom: 8 },
-  heroTitle: { color: '#fff', fontSize: 29, fontWeight: '900', lineHeight: 35 },
-  heroCompany: { color: '#fff', fontSize: 17, fontWeight: '900', marginTop: 8 },
-  heroPeriod: { color: '#F2FFFA', fontSize: 17, fontWeight: '900', marginTop: 12 },
-  heroUser: { color: '#D7FBE8', fontSize: 12, fontWeight: '800', marginTop: 8 },
-  centerBlock: { padding: 30, alignItems: 'center' },
-  errorCard: { backgroundColor: '#FFF1F0', borderColor: '#FDA29B', borderWidth: 1, borderRadius: 20, padding: 16, marginBottom: 18 },
-  errorStrong: { color: '#B42318', fontWeight: '900', marginBottom: 6, fontSize: 16 },
-
-  sectionBlock: { marginBottom: 2 },
-  sectionNote: { color: '#748094', fontWeight: '900', marginBottom: 14, fontSize: 16 },
-  kpiGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  kpiCard: { width: '48%', backgroundColor: '#fff', borderRadius: 22, padding: 16, borderWidth: 1, borderColor: BORDER, marginBottom: 12 },
-  kpiValue: { color: DARK, fontSize: 25, fontWeight: '900' },
-  kpiTitle: { color: TEXT, fontSize: 13, fontWeight: '900', marginTop: 8 },
-  kpiSub: { color: MUTED, fontSize: 12, fontWeight: '700', marginTop: 3 },
-
-  card: { backgroundColor: '#fff', borderRadius: 24, padding: 18, marginTop: 16, borderWidth: 1, borderColor: BORDER },
-  cardHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  cardTitle: { fontSize: 21, fontWeight: '900', color: TEXT },
-  cardRight: { color: GREEN, fontWeight: '900', fontSize: 15 },
-
-  chartArea: { height: 152, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
-  chartCol: { flex: 1, alignItems: 'center' },
-  chartBars: { height: 122, flexDirection: 'row', alignItems: 'flex-end', columnGap: 4 },
-  barTotal: { width: 14, borderRadius: 10, backgroundColor: DARK },
-  barWon: { width: 14, borderRadius: 10, backgroundColor: GREEN },
-  chartLabel: { color: MUTED, fontWeight: '900', fontSize: 12, marginTop: 8 },
-  legendRow: { flexDirection: 'row', columnGap: 18, marginTop: 8 },
-  legendTotal: { color: DARK, fontWeight: '900' },
-  legendWon: { color: GREEN, fontWeight: '900' },
-
-  twoCol: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 16 },
-  smallCard: { width: '48%', backgroundColor: '#fff', borderRadius: 22, padding: 16, borderWidth: 1, borderColor: BORDER, minHeight: 118 },
-  smallTitle: { fontSize: 20, fontWeight: '900', color: TEXT, marginBottom: 12 },
-
-  progressRow: { marginBottom: 14 },
-  progressRowCompact: { marginBottom: 11 },
-  progressTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  progressLabel: { color: TEXT, fontWeight: '800', flex: 1, paddingRight: 10 },
-  progressLabelCompact: { color: TEXT, fontWeight: '800', flex: 1, paddingRight: 8, fontSize: 12 },
-  progressValue: { color: DARK, fontWeight: '900', fontSize: 12 },
-  progressTrack: { height: 9, borderRadius: 9, backgroundColor: '#EAF1F3', marginTop: 8, overflow: 'hidden' },
-  progressFill: { height: '100%', backgroundColor: GREEN, borderRadius: 9 },
-
-  moduleGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  moduleCard: { width: '31%', backgroundColor: '#F4FAF8', borderRadius: 20, padding: 12, minHeight: 98, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
-  moduleIcon: { fontSize: 22, color: GREEN, fontWeight: '900', marginBottom: 8 },
-  moduleName: { color: TEXT, fontWeight: '900', fontSize: 12, textAlign: 'center' },
-  moduleCount: { color: MUTED, fontWeight: '900', fontSize: 14, marginTop: 5 },
-
-  listRow: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#EEF3F5', flexDirection: 'row', alignItems: 'center' },
-  rowTitle: { color: TEXT, fontSize: 15, fontWeight: '900' },
-  rowMeta: { color: MUTED, marginTop: 4, fontWeight: '700', fontSize: 12 },
-  rowAmount: { color: GREEN, fontWeight: '900', fontSize: 13, marginLeft: 8 },
-  statusPill: { color: GREEN, fontWeight: '900', fontSize: 12, backgroundColor: '#E9F9F0', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 99, marginLeft: 8 },
-
-  teamRow: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#EEF3F5', flexDirection: 'row', alignItems: 'center' },
-  avatarMini: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#E9F9F0', alignItems: 'center', justifyContent: 'center', marginRight: 10 },
-  avatarMiniText: { color: GREEN, fontWeight: '900' },
-
-  weatherGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  weatherMini: { width: '48%', backgroundColor: '#F4FAF8', borderRadius: 18, padding: 14, minHeight: 104, marginBottom: 12 },
-  weatherCity: { color: TEXT, fontWeight: '900', fontSize: 13 },
-  weatherTemp: { color: DARK, fontWeight: '900', fontSize: 28, marginTop: 8 },
-  weatherCond: { color: MUTED, fontWeight: '700', fontSize: 11, marginTop: 2 },
-
-  summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: '#EEF3F5' },
-  summaryLabel: { color: TEXT, fontWeight: '800' },
-  summaryValue: { color: GREEN, fontWeight: '900' },
-
-  quickGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  quickAction: { width: '48%', backgroundColor: '#F4FAF8', borderRadius: 18, padding: 14, marginBottom: 12, flexDirection: 'row', alignItems: 'center' },
-  quickPlus: { width: 28, height: 28, borderRadius: 14, backgroundColor: GREEN, color: '#fff', textAlign: 'center', lineHeight: 28, fontSize: 19, fontWeight: '900', marginRight: 10 },
-  quickTitle: { flex: 1, color: TEXT, fontWeight: '900', fontSize: 13 },
-
-  footerNav: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 82, backgroundColor: DARK, borderTopWidth: 0, flexDirection: 'row', paddingTop: 9, paddingBottom: 8 },
-  navItem: { flex: 1, alignItems: 'center' },
-  navCircle: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
-  navCircleActive: { backgroundColor: GREEN },
-  navIcon: { color: '#D4E8EC', fontSize: 20, fontWeight: '900' },
-  navIconActive: { color: '#fff' },
-  navText: { color: '#D4E8EC', fontSize: 11, fontWeight: '900', marginTop: 3 },
-  navActive: { color: '#fff' },
-
-  moduleScreen: { flex: 1, padding: 24, alignItems: 'center', justifyContent: 'center' },
-  moduleScreenScroll: { padding: 22, paddingBottom: 110 },
-  moduleBig: { fontSize: 26, fontWeight: '900', color: TEXT, marginBottom: 8, textAlign: 'center' },
-  moduleHint: { color: MUTED, textAlign: 'center', fontWeight: '700', lineHeight: 22, marginBottom: 16 },
-  moreList: { backgroundColor: '#fff', borderRadius: 22, borderWidth: 1, borderColor: BORDER, overflow: 'hidden' },
-  moreRow: { minHeight: 56, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: '#EEF3F5', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  moreTitle: { color: TEXT, fontWeight: '900', fontSize: 15 },
-  moreArrow: { color: GREEN, fontSize: 28, fontWeight: '900' },
-  backDashBtn: { backgroundColor: GREEN, paddingHorizontal: 18, paddingVertical: 13, borderRadius: 16 },
-  backDashText: { color: '#fff', fontWeight: '900' },
+  safe: { flex: 1, backgroundColor: '#EEF6F8' }, center: { flex: 1, alignItems: 'center', justifyContent: 'center' }, muted: { color: '#708093', fontWeight: '700', marginTop: 8 }, mutedSmall: { color: '#708093', fontSize: 12, fontWeight: '700' },
+  loginWrap: { flexGrow: 1, padding: 24, justifyContent: 'center' }, logoCircle: { width: 72, height: 72, borderRadius: 24, backgroundColor: '#006D68', alignSelf: 'center', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }, logoLetter: { color: '#fff', fontSize: 34, fontWeight: '900' }, logo: { fontSize: 36, fontWeight: '900', color: '#053B46', textAlign: 'center' }, logoSub: { fontSize: 15, fontWeight: '700', color: '#06C36B', textAlign: 'center', marginBottom: 22 }, loginCard: { backgroundColor: '#fff', borderRadius: 24, padding: 18, borderWidth: 1, borderColor: '#D8E8F0' }, loginTitle: { fontSize: 26, fontWeight: '900', color: '#03172D', textAlign: 'center' }, loginSub: { fontSize: 14, color: '#6B7688', textAlign: 'center', marginTop: 6, marginBottom: 22 }, label: { fontSize: 13, color: '#43536A', fontWeight: '800', marginBottom: 8, marginLeft: 4 }, input: { height: 54, borderRadius: 17, backgroundColor: '#fff', borderWidth: 1, borderColor: '#D8E8F0', paddingHorizontal: 18, fontSize: 16, marginBottom: 15, color: '#03172D' }, passRow: { height: 54, borderRadius: 17, backgroundColor: '#fff', borderWidth: 1, borderColor: '#D8E8F0', paddingLeft: 18, paddingRight: 8, marginBottom: 15, flexDirection: 'row', alignItems: 'center' }, passInput: { flex: 1, fontSize: 16, color: '#03172D', height: '100%' }, showBtn: { paddingHorizontal: 13, height: 40, borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#E9F7F1' }, showText: { color: '#069957', fontWeight: '900', fontSize: 13 }, errorText: { color: '#B42318', fontSize: 13, fontWeight: '700', lineHeight: 19 }, signBtn: { height: 56, borderRadius: 17, backgroundColor: '#06C36B', alignItems: 'center', justifyContent: 'center', marginTop: 6 }, signText: { color: '#fff', fontSize: 17, fontWeight: '900' },
+  topBar: { backgroundColor: '#053B46', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingTop: 7, paddingBottom: 8 }, searchPill: { flex: 1, height: 36, borderRadius: 18, backgroundColor: '#fff', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 11, marginRight: 8 }, searchInput: { flex: 1, fontSize: 13, color: '#03172D', marginLeft: 6 }, bellBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#075D63', alignItems: 'center', justifyContent: 'center', marginRight: 8 }, notifyBadge: { position: 'absolute', top: -5, right: -5, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: '#E11D48', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 }, notifyBadgeText: { color: '#fff', fontSize: 9, fontWeight: '900' }, profileBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#BCEBC8', alignItems: 'center', justifyContent: 'center' }, profileText: { color: '#006D68', fontWeight: '900', fontSize: 14 },
+  dashboardWrap: { padding: 2, paddingBottom: 18 }, filterHero: { backgroundColor: '#006D68', borderRadius: 16, padding: 13, margin: 2, marginBottom: 8 }, filterTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }, gaugeIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center' }, filterTitle: { color: '#fff', fontSize: 18, fontWeight: '900' }, filterSubtitle: { color: '#E7FFF5', fontSize: 11, fontWeight: '900', marginTop: 2, lineHeight: 16 }, dropdownWide: { height: 40, borderRadius: 12, backgroundColor: '#F8FDFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13, marginTop: 4 }, filterTwoCol: { flexDirection: 'row', gap: 10, marginTop: 9 }, dropdownHalf: { flex: 1, height: 40, borderRadius: 12, backgroundColor: '#F8FDFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13 }, dropdownText: { color: '#03172D', fontSize: 12, fontWeight: '900' }, dateHalf: { flex: 1, height: 40, borderRadius: 12, backgroundColor: '#F8FDFF', alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 7 }, dateBig: { color: '#03172D', fontSize: 14, fontWeight: '900' }, applyBigBtn: { height: 42, borderRadius: 12, backgroundColor: '#06C36B', alignItems: 'center', justifyContent: 'center', marginTop: 10 }, applyBigText: { color: '#fff', fontSize: 14, fontWeight: '900' },
+  errorCard: { backgroundColor: '#FFF1F0', borderColor: '#FDA29B', borderWidth: 1, borderRadius: 16, padding: 12, marginHorizontal: 2, marginBottom: 10 }, errorStrong: { color: '#B42318', fontWeight: '900', marginBottom: 4, fontSize: 15 }, centerBlock: { padding: 22, alignItems: 'center' },
+  kpiGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 9, paddingHorizontal: 2 }, kpiCard: { width: '48.6%', backgroundColor: '#fff', borderRadius: 17, padding: 12, borderWidth: 1, borderColor: '#D8E8F0', minHeight: 124 }, kpiTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }, kpiIconCircle: { width: 34, height: 34, borderRadius: 12, backgroundColor: '#E7FFF5', alignItems: 'center', justifyContent: 'center' }, openCircle: { width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: '#B7F3C9', alignItems: 'center', justifyContent: 'center' }, kpiTitle: { color: '#52627A', fontSize: 11, fontWeight: '900', marginBottom: 2 }, kpiValue: { color: '#03172D', fontSize: 18, fontWeight: '900', lineHeight: 24 }, kpiSub: { color: '#6B7688', fontSize: 11, fontWeight: '800', marginTop: 3 },
+  sectionCard: { backgroundColor: '#fff', borderRadius: 18, borderWidth: 1, borderColor: '#D8E8F0', marginTop: 10, marginHorizontal: 2, overflow: 'hidden' }, sectionHead: { padding: 13, borderBottomWidth: 1, borderBottomColor: '#EDF4F7', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }, sectionHeadLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 11 }, sectionIconCircle: { width: 34, height: 34, borderRadius: 12, backgroundColor: '#E7FFF5', alignItems: 'center', justifyContent: 'center' }, sectionTitle: { color: '#03172D', fontSize: 16, fontWeight: '900' }, sectionSubtitle: { color: '#52627A', fontSize: 10, fontWeight: '900', marginTop: 2 }, sectionOpen: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#E7FFF5', alignItems: 'center', justifyContent: 'center' }, sectionBody: { paddingTop: 0, paddingBottom: 12 }, emptyBox: { marginHorizontal: 13, marginTop: 12, marginBottom: 0, minHeight: 86, borderWidth: 1, borderColor: '#D8E8F0', borderStyle: 'dashed', borderRadius: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FAFDFF' }, emptyText: { color: '#9AA8BC', fontSize: 12, fontWeight: '900' },
+  pipelineRow: { marginHorizontal: 13, marginTop: 10, padding: 12, backgroundColor: '#F8FBFD', borderRadius: 14, borderWidth: 1, borderColor: '#E7F0F5' }, pipelineTop: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 7 }, pipelineLabel: { color: '#03172D', fontSize: 12, fontWeight: '900', flex: 1 }, pipelineValue: { color: '#03172D', fontSize: 12, fontWeight: '900' }, pipelineTrack: { height: 7, borderRadius: 7, backgroundColor: '#E1ECF2', overflow: 'hidden' }, pipelineFill: { height: 7, borderRadius: 7, backgroundColor: '#00A86B' },
+  listPill: { marginHorizontal: 13, marginTop: 10, padding: 12, backgroundColor: '#F8FBFD', borderRadius: 14, borderWidth: 1, borderColor: '#E7F0F5', flexDirection: 'row', alignItems: 'center', gap: 10 }, listPillTitle: { color: '#03172D', fontSize: 12, fontWeight: '900', lineHeight: 17 }, listPillSub: { color: '#52627A', fontSize: 10, fontWeight: '800', marginTop: 2 }, listPillRight: { color: '#00A86B', fontSize: 10, fontWeight: '900' }, amountBadge: { backgroundColor: '#DDFBEA', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6 }, amountText: { color: '#00875A', fontSize: 10, fontWeight: '900' }, statusBadge: { backgroundColor: '#E7FFF5', borderWidth: 1, borderColor: '#92EFC3', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6 }, statusText: { color: '#00875A', fontSize: 10, fontWeight: '900' },
+  dualPill: { marginHorizontal: 13, marginTop: 10, minHeight: 42, backgroundColor: '#F8FBFD', borderRadius: 14, borderWidth: 1, borderColor: '#E7F0F5', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13 }, dualTitle: { color: '#03172D', fontSize: 12, fontWeight: '900', flex: 1 }, dualCounts: { flexDirection: 'row', gap: 8 }, totalBubble: { minWidth: 30, height: 26, borderRadius: 13, backgroundColor: '#EAF6FF', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }, totalBubbleText: { color: '#03172D', fontSize: 11, fontWeight: '900' }, wonBubble: { minWidth: 30, height: 26, borderRadius: 13, backgroundColor: '#DDFBEA', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 }, wonBubbleText: { color: '#00875A', fontSize: 11, fontWeight: '900' },
+  weatherRow: { marginHorizontal: 13, marginTop: 10, minHeight: 74, backgroundColor: '#F8FBFD', borderRadius: 14, borderWidth: 1, borderColor: '#E7F0F5', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 13 }, weatherCity: { color: '#03172D', fontSize: 12, fontWeight: '900' }, weatherRight: { flexDirection: 'row', alignItems: 'center', gap: 12 }, weatherTemp: { color: '#03172D', fontSize: 19, fontWeight: '900' }, weatherUpdated: { color: '#52627A', fontSize: 10, fontWeight: '900', textAlign: 'center', paddingVertical: 11 },
+  modalShade: { flex: 1, backgroundColor: 'rgba(0,0,0,0.28)', paddingTop: Platform.OS === 'ios' ? 54 : 34, paddingHorizontal: 12 }, dropdownPanel: { backgroundColor: '#fff', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: '#D8E8F0' }, notifyPanel: { backgroundColor: '#fff', borderRadius: 18, padding: 14, borderWidth: 1, borderColor: '#D8E8F0' }, panelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, panelTitle: { color: '#03172D', fontSize: 17, fontWeight: '900' }, closeCircle: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#F1F5F7', alignItems: 'center', justifyContent: 'center' }, unreadPill: { alignSelf: 'flex-end', backgroundColor: '#E7FFF5', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999, marginTop: 8, marginBottom: 6 }, unreadText: { color: '#00A86B', fontSize: 12, fontWeight: '900' }, notifyItem: { flexDirection: 'row', gap: 12, padding: 13, marginTop: 10, borderWidth: 1, borderColor: '#D8E8F0', borderRadius: 14, backgroundColor: '#fff' }, notifyIcon: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#E7FFF5', alignItems: 'center', justifyContent: 'center' }, notifyTitle: { color: '#172033', fontSize: 14, fontWeight: '900', lineHeight: 18 }, notifyMeta: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 4 }, notifyKind: { color: '#64748B', fontSize: 12, fontWeight: '800' }, notifyTime: { color: '#E11D48', fontSize: 12, fontWeight: '900' }, notifyDesc: { color: '#7B8794', fontSize: 12, fontWeight: '700', lineHeight: 16, marginTop: 7 }, optionRow: { paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#EEF3F5' }, optionText: { color: '#03172D', fontSize: 14, fontWeight: '900' },
+  drawerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.22)', flexDirection: 'row' }, drawer: { width: '86%', backgroundColor: '#fff', height: '100%' }, drawerContent: { paddingTop: Platform.OS === 'ios' ? 48 : 22, paddingBottom: 30 }, drawerTop: { flexDirection: 'row', gap: 12, paddingHorizontal: 18, paddingBottom: 18, backgroundColor: '#F7FBFC', borderBottomWidth: 1, borderBottomColor: '#EDF2F5' }, profileLarge: { width: 66, height: 66, borderRadius: 33, backgroundColor: '#B7F3C9', alignItems: 'center', justifyContent: 'center' }, profileLargeText: { color: '#006D68', fontSize: 22, fontWeight: '900' }, drawerName: { color: '#03172D', fontSize: 18, fontWeight: '900' }, drawerUserId: { color: '#43536A', fontSize: 12, fontWeight: '900', marginTop: 5 }, drawerSub: { color: '#708093', fontSize: 12, fontWeight: '800', marginTop: 4 }, drawerLinks: { flexDirection: 'row', gap: 18, marginTop: 11 }, drawerLinkBlue: { color: '#316DCA', fontSize: 12, fontWeight: '900' }, drawerLinkRed: { color: '#F04438', fontSize: 12, fontWeight: '900' }, drawerClose: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#F1F5F7', alignItems: 'center', justifyContent: 'center' }, drawerSectionTitle: { color: '#344054', fontSize: 15, fontWeight: '900', marginTop: 18, marginBottom: 12, paddingHorizontal: 18 }, orgRow: { flexDirection: 'row', gap: 12, alignItems: 'center', marginBottom: 8, paddingHorizontal: 18 }, orgIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#CFF7F1', alignItems: 'center', justifyContent: 'center' }, orgIconText: { color: '#006D68', fontWeight: '900' }, orgName: { color: '#344054', fontSize: 14, fontWeight: '900' }, orgSub: { color: '#708093', fontSize: 12, fontWeight: '800', marginTop: 2 }, accountRow: { flexDirection: 'row', alignItems: 'center', gap: 13, paddingVertical: 10, paddingHorizontal: 18 }, accountText: { color: '#344054', fontSize: 14, fontWeight: '700' }, licenseGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 18 }, licenseBox: { width: '48%', borderWidth: 1, borderColor: '#D8E8F0', borderRadius: 10, padding: 12, minHeight: 66 }, licenseLabel: { color: '#708093', fontSize: 11, fontWeight: '900' }, licenseValue: { color: '#344054', fontSize: 15, fontWeight: '900', marginTop: 7 },
+  dateModalShade: { flex: 1, backgroundColor: 'rgba(0,0,0,0.25)', alignItems: 'center', justifyContent: 'center', padding: 18 }, datePickerCard: { backgroundColor: '#fff', borderRadius: 18, padding: 14, width: '100%', borderWidth: 1, borderColor: '#D8E8F0' }, doneBtn: { height: 44, borderRadius: 12, backgroundColor: '#06C36B', alignItems: 'center', justifyContent: 'center', marginTop: 10 }, doneText: { color: '#fff', fontSize: 14, fontWeight: '900' }
 });
